@@ -1,0 +1,5 @@
+{
+    "python.analysis.extraPaths": [
+        "./build/localnmos/fedora/43/localnmos-0.0.1/usr/lib64/localnmos/app_packages"
+    ]
+}
