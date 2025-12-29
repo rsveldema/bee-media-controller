@@ -6,13 +6,16 @@ It discovers IS-04 and IS-05 NMOS services on the local network.
 """
 
 import asyncio
+import inspect
 import logging
 import sys
 import time
+import traceback
 from typing import Callable, Optional, Dict, Any
 from dataclasses import dataclass
 import socket
 from aiohttp import web
+from aiohttp.web_response import json_response
 
 try:
     from zeroconf import ServiceBrowser, ServiceListener, Zeroconf, ServiceInfo, InterfaceChoice
@@ -88,7 +91,7 @@ class NMOSServiceListener(ServiceListener):
         self.on_device_added = on_device_added
         self.on_device_removed = on_device_removed
         self.devices: Dict[str, NMOSDevice] = {}
-    
+
 
     def add_service(self, zc: Zeroconf, service_type: str, name: str) -> None:
         """Called when a service is discovered"""
@@ -107,6 +110,13 @@ class NMOSServiceListener(ServiceListener):
             device = self.devices.pop(name)
             if self.on_device_removed:
                 self.on_device_removed(device)
+
+
+    def get_device_by_id(self, device_id:str) -> NMOSDevice|None:
+        for e in self.devices.values():
+            if e.device_id == device_id:
+                return e
+        return None
 
     def update_service(self, zc: Zeroconf, service_type: str, name: str) -> None:
         """Called when a service is updated"""
@@ -136,11 +146,16 @@ class NMOSServiceListener(ServiceListener):
                 except:
                     pass
 
+        device_id=properties.get("node_id", info.name),
+        if self.get_device_by_id(device_id) is not None:
+            logger.info("already have device, ignoring")
+            return
+
         # Extract version from properties or service type
         # MT48 and other devices may advertise different API versions
         api_ver = properties.get("api_ver", "v1.3")
         api_proto = properties.get("api_proto", "http")
-        
+
         # Log discovered properties for debugging MT48 and other devices
         logger.debug(f"Device {info.name} properties: {properties}")
 
@@ -174,7 +189,7 @@ class NMOSRegistry:
     NMOS_REGISTRATION_SERVICE = "_nmos-registration._tcp.local."
     NMOS_QUERY_SERVICE = "_nmos-query._tcp.local."
     NMOS_REGISTER_SERVICE = "_nmos-register._tcp.local."
-    
+
 
     # Additional service types for broader compatibility (e.g., MT48 devices)
     NMOS_CONNECTION_SERVICE = "_nmos-connection._tcp.local."  # IS-05 Connection API
@@ -212,7 +227,7 @@ class NMOSRegistry:
         self.announcement_task = None  # Background task for periodic service announcements
 
     async def connect_sender_to_receiver(self, sender_id: str, receiver_id: str):
-        """Connect sender to receiver using IS-05 API"""        
+        """Connect sender to receiver using IS-05 API"""
         pass
 
     async def disconnect_sender_from_receiver(self, sender_id: str, receiver_id: str):
@@ -252,7 +267,7 @@ class NMOSRegistry:
         service_types = [
             self.NMOS_NODE_SERVICE,
             #self.NMOS_REGISTER_SERVICE,
-            self.NMOS_REGISTRATION_SERVICE,
+            #self.NMOS_REGISTRATION_SERVICE,
             self.NMOS_QUERY_SERVICE,
             self.NMOS_CONNECTION_SERVICE,
             self.NMOS_CHANNELMAPPING_SERVICE,
@@ -266,7 +281,10 @@ class NMOSRegistry:
 
         # Host registration service for other devices to discover
         try:
-            await self._register_service()
+            # for 1.3 clients
+            await self._register_service(self.NMOS_REGISTER_SERVICE)
+            # for 1.2 clients
+            await self._register_service(self.NMOS_REGISTRATION_SERVICE)
             await self._start_registration_server()
             # Start heartbeat monitoring
             self.heartbeat_task = asyncio.create_task(self._monitor_heartbeats())
@@ -322,25 +340,25 @@ class NMOSRegistry:
 
         self.devices.clear()
 
-    async def _register_service(self):
+    async def _register_service(self, mdns_service_type: str):
         """Register and advertise NMOS registration service via mDNS"""
         try:
             # Get local hostname and IP
             hostname = socket.gethostname()
             local_ip = socket.gethostbyname(hostname)
-            
+
             # Service configuration
-            service_name = f"NMOS Registry on {hostname}.{self.NMOS_REGISTER_SERVICE}"  
-            service_type = self.NMOS_REGISTER_SERVICE
+            service_name = f"NMOS Registry on {hostname}.{mdns_service_type}"
+            service_type = mdns_service_type
             port = 8080  # Default NMOS registration API port
-            
+
             # TXT record properties for NMOS service
             properties = {
                 b"api_ver": b"v1.3",
                 b"api_proto": b"http",
                 b"pri": b"100",  # Priority
             }
-            
+
             # Create service info
             self.service_info = ServiceInfo(
                 service_type,
@@ -350,14 +368,15 @@ class NMOSRegistry:
                 properties=properties,
                 server=f"{hostname}.local."
             )
-            
+
             # Register the service
-            await self.async_zeroconf.async_register_service(self.service_info)
+            await self.async_zeroconf.async_register_service(self.service_info, strict=False)
             logger.info(
                 f"Hosting NMOS registration service: {service_name} at {local_ip}:{port} via mDNs for {service_type} "
             )
         except Exception as e:
             logger.error(f"Failed to register NMOS service: {e}")
+            traceback.print_exception(e)
             sys.exit(1)
 
     async def _unregister_service(self):
@@ -374,15 +393,16 @@ class NMOSRegistry:
         """Start HTTP server to accept device registrations"""
         try:
             app = web.Application()
+            app.router.add_post('/x-nmos/registration/{api_version}/health/nodes/{nodeId}', self._handle_health)
             app.router.add_post('/x-nmos/registration/{api_version}/resource', self._handle_registration)
             app.router.add_delete('/x-nmos/registration/{api_version}/resource/{resource_type}/{resource_id}', self._handle_deregistration)
-            
+
             self.registration_runner = web.AppRunner(app)
             await self.registration_runner.setup()
-            
+
             site = web.TCPSite(self.registration_runner, '0.0.0.0', self.registration_port)
             await site.start()
-            
+
             logger.info(f"Registration HTTP server started on port {self.registration_port}")
         except Exception as e:
             logger.error(f"Failed to start registration server: {e}")
@@ -397,28 +417,40 @@ class NMOSRegistry:
             except Exception as e:
                 logger.error(f"Failed to stop registration server: {e}")
 
+    async def _handle_health(self, request):
+        """ handle health update """
+        logger.info("Received health update")
+        try:
+            nodeId = request.match_info.get('nodeId')
+            timestamp = time.time()
+            self.device_heartbeats[nodeId] = timestamp
+            return json_response({'health': timestamp}, status=200)
+        except Exception as e:
+            logger.error(f"Error handling health check: {e}")
+            return json_response({'error': str(e)}, status=400)
+
     async def _handle_registration(self, request):
         """Handle device registration and re-registration POST requests"""
-        logger.info("Received registration request")  
+        logger.info("Received registration request")
         try:
             api_version = request.match_info.get('api_version', 'v1.3')
             data = await request.json()
-            
+
             # Extract device information from registration data
             resource_type = data.get('type')
             resource_data = data.get('data', {})
-            
+
             if resource_type == 'node':
                 # Register or re-register a node
                 device_id = resource_data.get('id', 'unknown')
                 label = resource_data.get('label', 'Unknown Device')
-                
+
                 # Try to get address from request
                 client_host = request.remote
-                
+
                 # Update heartbeat timestamp
                 self.device_heartbeats[device_id] = time.time()
-                
+
                 # Check if this is a re-registration (device already exists)
                 if device_id in self.devices:
                     # Re-registration: update existing device
@@ -426,7 +458,7 @@ class NMOSRegistry:
                     existing_device = self.devices[device_id]
                     # Update properties with new data
                     existing_device.properties.update(resource_data)
-                    return web.json_response({'status': 're-registered', 'id': device_id}, status=200)
+                    return json_response({'status': 're-registered', 'id': device_id}, status=200)
                 else:
                     # New registration
                     device = NMOSDevice(
@@ -438,64 +470,62 @@ class NMOSRegistry:
                         api_ver=api_version,
                         properties=resource_data
                     )
-                    
+
                     logger.info(f"Device registered via HTTP: {label} ({device_id}) from {client_host}")
-                    
+
                     # Add to devices and trigger callback
                     self._on_device_added(device)
-                    
-                    return web.json_response({'status': 'registered', 'id': device_id}, status=201)
+
+                    return json_response({'status': 'registered', 'id': device_id}, status=201)
             else:
                 # Handle other resource types (senders, receivers, etc.)
                 resource_id = resource_data.get('id', 'unknown')
                 self.device_heartbeats[resource_id] = time.time()
                 logger.info(f"Received {resource_type} registration: {resource_id}")
-                return web.json_response({'status': 'registered'}, status=201)
-                
+                return json_response({'status': 'registered'}, status=201)
+
         except Exception as e:
-            from aiohttp import web
             logger.error(f"Error handling registration: {e}")
-            return web.json_response({'error': str(e)}, status=400)
+            return json_response({'error': str(e)}, status=400)
 
     async def _handle_deregistration(self, request):
         """Handle device deregistration DELETE requests"""
         logger.info("Received deregistration request")
-        try:            
+        try:
             resource_type = request.match_info.get('resource_type')
             resource_id = request.match_info.get('resource_id')
-            
+
             logger.info(f"Deregistration request: {resource_type}/{resource_id}")
-            
+
             # Remove from heartbeat tracking
             if resource_id in self.device_heartbeats:
                 del self.device_heartbeats[resource_id]
-            
+
             # Find and remove device if it exists
             if resource_id in self.devices:
                 device = self.devices[resource_id]
                 self._on_device_removed(device)
-            
-            return web.json_response({'status': 'deregistered'}, status=204)
-            
+
+            return json_response({'status': 'deregistered'}, status=204)
+
         except Exception as e:
-            from aiohttp import web
             logger.error(f"Error handling deregistration: {e}")
-            return web.json_response({'error': str(e)}, status=400)
+            return json_response({'error': str(e)}, status=400)
 
     async def _announce_service_periodically(self):
         """Periodically announce the registration service via mDNS"""
         logger.info("Starting periodic service announcement loop")
-        
+
         while self._running:
             try:
                 # Wait 60 seconds between announcements (standard mDNS announcement interval)
                 await asyncio.sleep(60)
-                
+
                 if self.service_info and self.async_zeroconf:
                     # Update the service to trigger a fresh mDNS announcement
                     await self.async_zeroconf.async_update_service(self.service_info)
                     logger.debug("Service announcement sent via mDNS")
-                    
+
             except asyncio.CancelledError:
                 logger.info("Periodic service announcements cancelled")
                 break
@@ -506,36 +536,36 @@ class NMOSRegistry:
     async def _monitor_heartbeats(self):
         """Monitor device heartbeats and remove devices that haven't re-registered"""
         logger.info("Starting heartbeat monitoring loop")
-        
+
         while self._running:
             try:
                 current_time = time.time()
                 expired_devices = []
-                
+
                 # Check all registered devices for expired heartbeats
                 for device_id, last_heartbeat in list(self.device_heartbeats.items()):
                     time_since_heartbeat = current_time - last_heartbeat
-                    
+
                     if time_since_heartbeat > self.heartbeat_timeout:
                         logger.warning(
                             f"Device {device_id} heartbeat expired "
                             f"({time_since_heartbeat:.1f}s > {self.heartbeat_timeout}s)"
                         )
                         expired_devices.append(device_id)
-                
+
                 # Remove expired devices
                 for device_id in expired_devices:
                     if device_id in self.device_heartbeats:
                         del self.device_heartbeats[device_id]
-                    
+
                     if device_id in self.devices:
                         device = self.devices[device_id]
                         logger.info(f"Removing expired device: {device.name} ({device_id})")
                         self._on_device_removed(device)
-                
+
                 # Check every 5 seconds
                 await asyncio.sleep(5)
-                
+
             except asyncio.CancelledError:
                 logger.info("Heartbeat monitoring cancelled")
                 break
@@ -585,13 +615,13 @@ class NMOSRegistry:
     async def _query_device_resources(self, device: NMOSDevice):
         """Query device for senders and receivers after discovery"""
         logger.info(f"Querying {device.name} for senders and receivers...")
-        
+
         # Query senders
         device.senders = await self.query_device_senders(device)
-        
+
         # Query receivers
         device.receivers = await self.query_device_receivers(device)
-        
+
         logger.info(
             f"Device {device.name}: {len(device.senders)} senders, "
             f"{len(device.receivers)} receivers"
@@ -599,10 +629,16 @@ class NMOSRegistry:
 
     async def _call_callback(self, callback: Callable, device: NMOSDevice):
         """Helper to call callbacks asynchronously"""
+        if inspect.iscoroutinefunction(callback):
+            await callback(device)
+        else:
+            callback(device)
+        """
         if asyncio.iscoroutinefunction(callback):
             await callback(device)
         else:
             callback(device)
+        """
 
     def get_devices(self) -> Dict[str, NMOSDevice]:
         """Get all discovered devices"""
@@ -640,10 +676,10 @@ class NMOSRegistry:
     async def query_device_senders(self, device: NMOSDevice) -> list:
         """
         Query a device's senders
-        
+
         Args:
             device: The NMOS device to query
-            
+
         Returns:
             List of sender objects or empty list if query fails
         """
@@ -656,10 +692,10 @@ class NMOSRegistry:
     async def query_device_receivers(self, device: NMOSDevice) -> list:
         """
         Query a device's receivers
-        
+
         Args:
             device: The NMOS device to query
-            
+
         Returns:
             List of receiver objects or empty list if query fails
         """

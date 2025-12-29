@@ -51,7 +51,7 @@ class UIModel:
         subtitle: str,
         icon: toga.Icon = toga.Icon.DEFAULT_ICON,
     ):
-        entry = {"title": dev, "subtitle": subtitle, "icon": icon}
+        entry = {"title": dev, "subtitle": subtitle, "icon": icon, "id" : device_id}
         self.devices.append(entry)
         if device_id:
             self.device_map[device_id] = UI_NMOS_Node(
@@ -61,17 +61,17 @@ class UIModel:
     def remove_device(self, device_id: str):
         if device_id in self.device_map:
             node = self.device_map.pop(device_id)
-            # Find and remove from ListSource
-            for i, item in enumerate(self.devices):
-                if item == node.list_entry:
-                    self.devices.remove(item)
-                    break
+        # Find and remove from ListSource
+        for item in self.devices:
+            if item.__dict__["id"]  == device_id:
+                self.devices.remove(item)
+                break
 
 
 class LocalNMOS(toga.App):
-        
+
     # Matrix dimensions (must match draw_routing_matrix)
-    
+
     def get_local_ip(self):
         """Get the host's local IP address"""
         try:
@@ -84,7 +84,7 @@ class LocalNMOS(toga.App):
             return local_ip
         except Exception:
             return "Unable to determine IP"
-    
+
     def about(self):
         """Show about dialog with IP address information"""
         ip_address = self.get_local_ip()
@@ -95,7 +95,7 @@ class LocalNMOS(toga.App):
             f"Host IP Address: {ip_address}\n\n"
             f"Local NMOS device discovery and routing matrix."
         )
-    
+
     def draw_routing_matrix(self):
         """draw the routing matrix with on the canvas. On the horizonal axis we have the transmitting devices,
         on the vertical axis we have the receiving devices. A checkmark is drawn on the intersections where routing is active.
@@ -108,7 +108,7 @@ class LocalNMOS(toga.App):
 
         # Get all discovered devices - show them all in the matrix
         nodes = list(self.model.device_map.values())
-        
+
         # Use all nodes as both potential senders and receivers
         senders = nodes.copy()
         receivers = nodes.copy()
@@ -163,7 +163,7 @@ class LocalNMOS(toga.App):
             label = receiver.list_entry.get("title", f"Receiver {i}")[:20]
             # Measure text width for accurate right alignment
             text_size = self.canvas.measure_text(label, font)
-            
+
             with self.canvas.context.Fill(color=rgb(180, 120, 60)) as fill:
                 # Position text so it ends 15 pixels to the left of the matrix
                 fill.write_text(label, self.margin_left - text_size[0] - 15, y, font, Baseline.MIDDLE)
@@ -294,17 +294,17 @@ class LocalNMOS(toga.App):
             nodes = list(self.model.device_map.values())
             matrix_width = len(nodes) * self.cell_width
             matrix_height = len(nodes) * self.cell_height
-            
+
             # Center the matrix horizontally and vertically
             label_space_left = 150  # Space for receiver labels on the left
             label_space_top = 100   # Space for sender labels on top
-            
+
             available_width = width - label_space_left
             available_height = height - label_space_top
-            
+
             self.margin_left = label_space_left + max(0, (available_width - matrix_width) / 2)
             self.margin_top = label_space_top + max(0, (available_height - matrix_height) / 2)
-            
+
             self.draw_routing_matrix()
 
     async def on_press(self, widget, x, y, **kwargs):
@@ -313,38 +313,38 @@ class LocalNMOS(toga.App):
         """
         # Get all devices (same logic as draw_routing_matrix)
         nodes = list(self.model.device_map.values())
-        
+
         # Use all nodes as both potential senders and receivers
         senders = nodes.copy()
         receivers = nodes.copy()
-        
+
         if not senders or not receivers:
             # No devices to route
             return
-        
-        
+
+
         matrix_width = len(senders) * self.cell_width
         matrix_height = len(receivers) * self.cell_height
-        
+
         # Check if click is within the matrix bounds
         if x < self.margin_left or x > self.margin_left + matrix_width:
             return
         if y < self.margin_top or y > self.margin_top + matrix_height:
             return
-        
+
         # Calculate which cell was clicked
         sender_idx = int((x - self.margin_left) / self.cell_width)
         receiver_idx = int((y - self.margin_top) / self.cell_height)
-        
+
         # Validate indices
         if sender_idx < 0 or sender_idx >= len(senders):
             return
         if receiver_idx < 0 or receiver_idx >= len(receivers):
             return
-        
+
         sender = senders[sender_idx]
         receiver = receivers[receiver_idx]
-        
+
         # Toggle the routing connection
         if sender in receiver.senders:
             # Disconnect
@@ -356,9 +356,9 @@ class LocalNMOS(toga.App):
             receiver.add_sender(sender)
             sender.add_receiver(receiver)
             print(f"Connected: {sender.list_entry.get('title', 'Sender')} -> {receiver.list_entry.get('title', 'Receiver')}")
-            
+
             await self.connect_devices(sender, receiver)
-        
+
         # Redraw the matrix to show the change
         self.draw_routing_matrix()
 
@@ -383,4 +383,4 @@ class LocalNMOS(toga.App):
 
 
 def main():
-    return LocalNMOS()
+    return LocalNMOS("LocalNMOS", "com.sh.localNMOS")
