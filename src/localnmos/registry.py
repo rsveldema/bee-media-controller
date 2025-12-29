@@ -11,7 +11,7 @@ import logging
 import sys
 import time
 import traceback
-from typing import Callable, Optional, Dict, Any
+from typing import Callable, List, Optional, Dict, Any
 from dataclasses import dataclass
 import socket
 from aiohttp import web
@@ -46,27 +46,38 @@ if not logger.handlers:
 
 
 @dataclass
-class NMOSDevice:
+class NMOS_Device:
     """Represents an NMOS device discovered on the network"""
-
-    name: str
+    node_id: str
     device_id: str
-    address: str
-    port: int
-    service_type: str
-    version: str = "v1.3"
-    api_ver: str = "v1.3"
-    properties: Dict[str, Any] = None
-    senders: list = None
-    receivers: list = None
+    senders: List[NMOS_Device]
+    receivers: List[NMOS_Device]
 
     def __post_init__(self):
-        if self.properties is None:
-            self.properties = {}
         if self.senders is None:
             self.senders = []
         if self.receivers is None:
             self.receivers = []
+
+@dataclass
+class NMOS_Node:
+    """Represents an NMOS Node discovered on the network"""
+
+    name: str
+    node_id: str
+    address: str
+    port: int
+    service_type: str
+    properties: Dict[str, Any]
+    devices: List[NMOS_Device]
+    version: str = "v1.3"
+    api_ver: str = "v1.3"
+
+    def __post_init__(self):
+        if self.devices is None:
+            self.devices = []
+        if self.properties is None:
+            self.properties = {}
 
     @property
     def base_url(self) -> str:
@@ -88,9 +99,9 @@ class NMOSServiceListener(ServiceListener):
     """Listens for NMOS services advertised via mDNS"""
 
     def __init__(self, on_device_added: Callable, on_device_removed: Callable):
-        self.on_device_added = on_device_added
+        self.on_node_added = on_device_added
         self.on_device_removed = on_device_removed
-        self.devices: Dict[str, NMOSDevice] = {}
+        self.devices: Dict[str, NMOS_Node] = {}
 
 
     def add_service(self, zc: Zeroconf, service_type: str, name: str) -> None:
@@ -112,9 +123,9 @@ class NMOSServiceListener(ServiceListener):
                 self.on_device_removed(device)
 
 
-    def get_device_by_id(self, device_id:str) -> NMOSDevice|None:
+    def get_node_by_id(self, node_id:str) -> NMOS_Node|None:
         for e in self.devices.values():
-            if e.device_id == device_id:
+            if e.node_id == node_id:
                 return e
         return None
 
@@ -147,7 +158,7 @@ class NMOSServiceListener(ServiceListener):
                     pass
 
         device_id=properties.get("node_id", info.name),
-        if self.get_device_by_id(device_id) is not None:
+        if self.get_node_by_id(device_id) is not None:
             logger.info("already have device, ignoring")
             return
 
@@ -160,20 +171,24 @@ class NMOSServiceListener(ServiceListener):
         logger.debug(f"Device {info.name} properties: {properties}")
 
         # Create device
-        device = NMOSDevice(
+        devices=[]
+
+        # we're pretty sure we've found a new Node, lets allocate it
+        node = NMOS_Node(
             name=info.name,
-            device_id=properties.get("node_id", info.name),
+            node_id=properties.get("node_id", info.name),
             address=address,
             port=port,
             service_type=service_type,
             api_ver=api_ver,
             properties=properties,
+            devices=devices
         )
 
-        self.devices[info.name] = device
+        self.devices[info.name] = node
 
-        if added and self.on_device_added:
-            self.on_device_added(device)
+        if added and self.on_node_added:
+            self.on_node_added(node)
 
 
 class NMOSRegistry:
@@ -198,8 +213,8 @@ class NMOSRegistry:
 
     def __init__(
         self,
-        device_added_callback: Optional[Callable] = None,
-        device_removed_callback: Optional[Callable] = None,
+        node_added_callback: Optional[Callable] = None,
+        node_removed_callback: Optional[Callable] = None,
     ):
         """
         Initialize the NMOS registry
@@ -208,14 +223,14 @@ class NMOSRegistry:
             device_added_callback: Callback function called when a device is discovered
             device_removed_callback: Callback function called when a device is removed
         """
-        self.device_added_callback = device_added_callback
-        self.device_removed_callback = device_removed_callback
+        self.node_added_callback = node_added_callback
+        self.node_removed_callback = node_removed_callback
 
         self.zeroconf: Optional[Zeroconf] = None
         self.async_zeroconf: Optional[AsyncZeroconf] = None
         self.browsers = []
         self.listener: Optional[NMOSServiceListener] = None
-        self.devices: Dict[str, NMOSDevice] = {}
+        self.nodes: Dict[str, NMOS_Node] = {}
         self._running = False
         self.service_info: Optional[ServiceInfo] = None  # For hosting registration service
         self.registration_server = None  # HTTP server for device registrations
@@ -259,8 +274,8 @@ class NMOSRegistry:
 
         # Create service listener
         self.listener = NMOSServiceListener(
-            on_device_added=self._on_device_added,
-            on_device_removed=self._on_device_removed,
+            on_device_added=self._on_node_added,
+            on_device_removed=self._on_node_removed,
         )
 
         # Browse for NMOS services
@@ -338,7 +353,7 @@ class NMOSRegistry:
             self.async_zeroconf = None
             self.zeroconf = None
 
-        self.devices.clear()
+        self.nodes.clear()
 
     async def _register_service(self, mdns_service_type: str):
         """Register and advertise NMOS registration service via mDNS"""
@@ -429,9 +444,93 @@ class NMOSRegistry:
             logger.error(f"Error handling health check: {e}")
             return json_response({'error': str(e)}, status=400)
 
+    def _handle_registration_node(self, request, resource_data: dict, api_version: str):
+        # Register or re-register a node
+        device_id = resource_data.get('id', 'unknown')
+        label = resource_data.get('label', 'Unknown Device')
+
+        # Try to get address from request
+        client_host = request.remote
+
+        # Update heartbeat timestamp
+        self.device_heartbeats[device_id] = time.time()
+
+        # Check if this is a re-registration (device already exists)
+        if device_id in self.nodes:
+            # Re-registration: update existing device
+            logger.info(f"Device re-registered: {label} ({device_id}) from {client_host}")
+            existing_device = self.nodes[device_id]
+            # Update properties with new data
+            existing_device.properties.update(resource_data)
+            return json_response({'status': 're-registered', 'id': device_id}, status=200)
+
+        devices = []
+
+        # New registration
+        device = NMOS_Node(
+            name=label,
+            node_id=device_id,
+            address=client_host,
+            port=80,  # Default HTTP port, may be in data
+            service_type='_nmos-register._tcp.local.',
+            api_ver=api_version,
+            properties=resource_data,
+            devices=devices
+        )
+
+        logger.info(f"Device registered via HTTP: {label} ({device_id}) from {client_host}")
+        # Add to devices and trigger callback
+        self._on_node_added(device)
+        return json_response({'status': 'registered', 'id': device_id}, status=201)
+
+
+    def get_node_by_id(self, node_id:str) -> NMOS_Node|None:
+        for e in self.nodes.values():
+            if e.node_id == node_id:
+                return e
+        return None
+
+    def _handle_registration_device(self, request, resource_data: dict):
+        device_id = resource_data.get('id', None)
+        label = resource_data.get('label', 'no-label')
+        description = resource_data.get('label', 'no-description')
+        node_id = resource_data.get('node_id', None)
+        # senders/receivers are obsolete here
+        controls = resource_data.get('controls', None)
+
+        if node_id is None:
+            return json_response({'status': 'missing node id'}, status=404)
+        if device_id is None:
+            return json_response({'status': 'missing device id'}, status=404)
+
+        node = self.get_node_by_id(node_id)
+        if node is None:
+            return json_response({'status': 'bad node id'}, status=404)
+
+        senders = []
+        receivers = []
+        dev = NMOS_Device(node_id=node_id, device_id=device_id, senders=senders,receivers=receivers)
+        node.devices.append(dev)
+
+        return json_response({'status': 'registered'}, status=201)
+
+    def _handle_registration_sender(self, request, resource_data: dict):
+        return json_response({'status': 'registered'}, status=201)
+
+    def _handle_registration_receiver(self, request, resource_data: dict):
+        return json_response({'status': 'registered'}, status=201)
+
+    def _handle_registration_source(self, request, resource_data: dict):
+        return json_response({'status': 'registered'}, status=201)
+
+    def _handle_registration_flow(self, request, resource_data: dict):
+        return json_response({'status': 'registered'}, status=201)
+
+    def _handle_registration_unknown(self, request, resource_data: dict):
+        return json_response({'status': 'registered'}, status=201)
+
     async def _handle_registration(self, request):
         """Handle device registration and re-registration POST requests"""
-        logger.info("Received registration request")
         try:
             api_version = request.match_info.get('api_version', 'v1.3')
             data = await request.json()
@@ -440,49 +539,24 @@ class NMOSRegistry:
             resource_type = data.get('type')
             resource_data = data.get('data', {})
 
-            if resource_type == 'node':
-                # Register or re-register a node
-                device_id = resource_data.get('id', 'unknown')
-                label = resource_data.get('label', 'Unknown Device')
+            logger.info(f"Received registration request: {resource_type}")
 
-                # Try to get address from request
-                client_host = request.remote
-
-                # Update heartbeat timestamp
-                self.device_heartbeats[device_id] = time.time()
-
-                # Check if this is a re-registration (device already exists)
-                if device_id in self.devices:
-                    # Re-registration: update existing device
-                    logger.info(f"Device re-registered: {label} ({device_id}) from {client_host}")
-                    existing_device = self.devices[device_id]
-                    # Update properties with new data
-                    existing_device.properties.update(resource_data)
-                    return json_response({'status': 're-registered', 'id': device_id}, status=200)
-                else:
-                    # New registration
-                    device = NMOSDevice(
-                        name=label,
-                        device_id=device_id,
-                        address=client_host,
-                        port=80,  # Default HTTP port, may be in data
-                        service_type='_nmos-register._tcp.local.',
-                        api_ver=api_version,
-                        properties=resource_data
-                    )
-
-                    logger.info(f"Device registered via HTTP: {label} ({device_id}) from {client_host}")
-
-                    # Add to devices and trigger callback
-                    self._on_device_added(device)
-
-                    return json_response({'status': 'registered', 'id': device_id}, status=201)
-            else:
-                # Handle other resource types (senders, receivers, etc.)
-                resource_id = resource_data.get('id', 'unknown')
-                self.device_heartbeats[resource_id] = time.time()
-                logger.info(f"Received {resource_type} registration: {resource_id}")
-                return json_response({'status': 'registered'}, status=201)
+            match resource_type:
+                case 'node':
+                    return self._handle_registration_node(request, resource_data, api_version)
+                case 'device':
+                    return self._handle_registration_device(request, resource_data)
+                case 'sender':
+                    return self._handle_registration_sender(request, resource_data)
+                case 'receiver':
+                    return self._handle_registration_receiver(request, resource_data)
+                case 'flow':
+                    return self._handle_registration_flow(request, resource_data)
+                case 'source':
+                    return self._handle_registration_source(request, resource_data)
+                case _:
+                    logger.error(f"unknown resource type: {resource_type}")
+                    return self._handle_registration_unknown(request, resource_data)
 
         except Exception as e:
             logger.error(f"Error handling registration: {e}")
@@ -502,9 +576,9 @@ class NMOSRegistry:
                 del self.device_heartbeats[resource_id]
 
             # Find and remove device if it exists
-            if resource_id in self.devices:
-                device = self.devices[resource_id]
-                self._on_device_removed(device)
+            if resource_id in self.nodes:
+                device = self.nodes[resource_id]
+                self._on_node_removed(device)
 
             return json_response({'status': 'deregistered'}, status=204)
 
@@ -558,10 +632,10 @@ class NMOSRegistry:
                     if device_id in self.device_heartbeats:
                         del self.device_heartbeats[device_id]
 
-                    if device_id in self.devices:
-                        device = self.devices[device_id]
+                    if device_id in self.nodes:
+                        device = self.nodes[device_id]
                         logger.info(f"Removing expired device: {device.name} ({device_id})")
-                        self._on_device_removed(device)
+                        self._on_node_removed(device)
 
                 # Check every 5 seconds
                 await asyncio.sleep(5)
@@ -573,134 +647,42 @@ class NMOSRegistry:
                 logger.error(f"Error in heartbeat monitoring: {e}")
                 await asyncio.sleep(5)
 
-    def _on_device_added(self, device: NMOSDevice):
+    def _on_node_added(self, node: NMOS_Node):
         """Internal callback when a device is added"""
         logger.info(
-            f"Device discovered: {device.name} at {device.address}:{device.port}"
+            f"Device discovered: {node.name} at {node.address}:{node.port}"
         )
-        self.devices[device.device_id] = device
+        self.nodes[node.node_id] = node
 
-        # Query device for senders and receivers
-        try:
-            asyncio.create_task(self._query_device_resources(device))
-        except RuntimeError:
-            # If not in async context, skip querying
-            logger.warning(f"Cannot query device {device.name} - not in async context")
-
-        if self.device_added_callback:
+        if self.node_added_callback:
             # Schedule callback in event loop
             try:
                 asyncio.create_task(
-                    self._call_callback(self.device_added_callback, device)
+                    self._call_callback(self.node_added_callback, node)
                 )
             except RuntimeError:
                 # If not in async context, call directly
-                self.device_added_callback(device)
+                self.node_added_callback(node)
 
-    def _on_device_removed(self, device: NMOSDevice):
-        """Internal callback when a device is removed"""
-        logger.info(f"Device removed: {device.name}")
+    def _on_node_removed(self, node: NMOS_Node):
+        """Internal callback when a node is removed"""
+        logger.info(f"Node removed: {node.name}")
 
-        if device.device_id in self.devices:
-            del self.devices[device.device_id]
+        if node.node_id in self.nodes:
+            del self.nodes[node.node_id]
 
-        if self.device_removed_callback:
+        if self.node_removed_callback:
             try:
                 asyncio.create_task(
-                    self._call_callback(self.device_removed_callback, device)
+                    self._call_callback(self.node_removed_callback, node)
                 )
             except RuntimeError:
-                self.device_removed_callback(device)
+                self.node_removed_callback(node)
 
-    async def _query_device_resources(self, device: NMOSDevice):
-        """Query device for senders and receivers after discovery"""
-        logger.info(f"Querying {device.name} for senders and receivers...")
 
-        # Query senders
-        device.senders = await self.query_device_senders(device)
-
-        # Query receivers
-        device.receivers = await self.query_device_receivers(device)
-
-        logger.info(
-            f"Device {device.name}: {len(device.senders)} senders, "
-            f"{len(device.receivers)} receivers"
-        )
-
-    async def _call_callback(self, callback: Callable, device: NMOSDevice):
+    async def _call_callback(self, callback: Callable, device: NMOS_Node):
         """Helper to call callbacks asynchronously"""
         if inspect.iscoroutinefunction(callback):
             await callback(device)
         else:
             callback(device)
-        """
-        if asyncio.iscoroutinefunction(callback):
-            await callback(device)
-        else:
-            callback(device)
-        """
-
-    def get_devices(self) -> Dict[str, NMOSDevice]:
-        """Get all discovered devices"""
-        return self.devices.copy()
-
-    async def query_device(
-        self, device: NMOSDevice, endpoint: str = "/self"
-    ) -> Optional[Dict]:
-        """
-        Query a device's API endpoint
-
-        Args:
-            device: The NMOS device to query
-            endpoint: API endpoint path (default: /self)
-
-        Returns:
-            JSON response or None if request fails
-        """
-        url = f"{device.node_url}{endpoint}"
-
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(
-                    url, timeout=aiohttp.ClientTimeout(total=5)
-                ) as response:
-                    if response.status == 200:
-                        return await response.json()
-                    else:
-                        logger.warning(f"Failed to query {url}: HTTP {response.status}")
-        except Exception as e:
-            logger.error(f"Error querying device {device.name}: {e}")
-
-        return None
-
-    async def query_device_senders(self, device: NMOSDevice) -> list:
-        """
-        Query a device's senders
-
-        Args:
-            device: The NMOS device to query
-
-        Returns:
-            List of sender objects or empty list if query fails
-        """
-        result = await self.query_device(device, "/senders")
-        if result and isinstance(result, list):
-            logger.info(f"Device {device.name} has {len(result)} sender(s)")
-            return result
-        return []
-
-    async def query_device_receivers(self, device: NMOSDevice) -> list:
-        """
-        Query a device's receivers
-
-        Args:
-            device: The NMOS device to query
-
-        Returns:
-            List of receiver objects or empty list if query fails
-        """
-        result = await self.query_device(device, "/receivers")
-        if result and isinstance(result, list):
-            logger.info(f"Device {device.name} has {len(result)} receiver(s)")
-            return result
-        return []
