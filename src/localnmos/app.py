@@ -78,31 +78,12 @@ class LocalNMOS(toga.App):
         # Clear canvas
         self.canvas.context.clear()
 
-        # Get all devices with senders/receivers
+        # Get all discovered devices - show them all in the matrix
         nodes = list(self.model.device_map.values())
-
-        # Collect all unique senders and receivers
-        all_senders = []
-        all_receivers = []
-        for node in nodes:
-            all_senders.extend(node.senders)
-            all_receivers.extend(node.receivers)
-
-        # Remove duplicates while preserving order
-        senders = []
-        receivers = []
-        seen_senders = set()
-        seen_receivers = set()
-
-        for sender in all_senders:
-            if sender.device_id not in seen_senders:
-                senders.append(sender)
-                seen_senders.add(sender.device_id)
-
-        for receiver in all_receivers:
-            if receiver.device_id not in seen_receivers:
-                receivers.append(receiver)
-                seen_receivers.add(receiver.device_id)
+        
+        # Use all nodes as both potential senders and receivers
+        senders = nodes.copy()
+        receivers = nodes.copy()
 
         # Matrix dimensions and positioning
         margin_left = 150
@@ -191,7 +172,7 @@ class LocalNMOS(toga.App):
 
         main_box = toga.Box(direction=ROW)
 
-        devices_box = toga.Box(direction=COLUMN)
+        devices_box = toga.Box(direction=COLUMN, style=Pack(width=300))
         self.listbox = toga.DetailedList(data=self.model.devices, style=Pack(flex=1))
         devices_box.add(toga.Label("NMOS Devices (MDNS Discovery)"))
         devices_box.add(self.listbox)
@@ -210,12 +191,15 @@ class LocalNMOS(toga.App):
         self.main_window.content = main_box
         self.main_window.show()
 
-        self.x = 0
-        self.n = 100
         self.loop.call_soon_threadsafe(self.sync_task, "Hi")
 
     def on_device_added(self, device: NMOSDevice):
         """Callback when an NMOS device is discovered"""
+        # Schedule UI updates on the main thread to avoid hangs
+        self.loop.call_soon_threadsafe(self._on_device_added_ui, device)
+
+    def _on_device_added_ui(self, device: NMOSDevice):
+        """UI update for device added (runs on main thread)"""
         print(f"Device discovered: {device.name} at {device.address}:{device.port}")
         service_type = "Node" if "node" in device.service_type else "Service"
         self.model.add_device(
@@ -228,6 +212,11 @@ class LocalNMOS(toga.App):
 
     def on_device_removed(self, device: NMOSDevice):
         """Callback when an NMOS device is removed from the network"""
+        # Schedule UI updates on the main thread to avoid hangs
+        self.loop.call_soon_threadsafe(self._on_device_removed_ui, device)
+
+    def _on_device_removed_ui(self, device: NMOSDevice):
+        """UI update for device removed (runs on main thread)"""
         print(f"Device removed: {device.name}")
         self.model.remove_device(device.device_id)
         self.listbox.refresh()
@@ -260,31 +249,12 @@ class LocalNMOS(toga.App):
         """When clicking on the routing matrix at (x, y), we need to compute the intersection of senders and receivers
         to find out which NMOSDevice sender and NMOSDevice receiver it was. We then use is-05 to connect the sender and receiver by handing the transport file from the sender to the receiver.
         """
-        # Get all devices with senders/receivers
+        # Get all devices (same logic as draw_routing_matrix)
         nodes = list(self.model.device_map.values())
         
-        # Collect all unique senders and receivers (same logic as draw_routing_matrix)
-        all_senders = []
-        all_receivers = []
-        for node in nodes:
-            all_senders.extend(node.senders)
-            all_receivers.extend(node.receivers)
-        
-        # Remove duplicates while preserving order
-        senders = []
-        receivers = []
-        seen_senders = set()
-        seen_receivers = set()
-        
-        for sender in all_senders:
-            if sender.device_id not in seen_senders:
-                senders.append(sender)
-                seen_senders.add(sender.device_id)
-        
-        for receiver in all_receivers:
-            if receiver.device_id not in seen_receivers:
-                receivers.append(receiver)
-                seen_receivers.add(receiver.device_id)
+        # Use all nodes as both potential senders and receivers
+        senders = nodes.copy()
+        receivers = nodes.copy()
         
         if not senders or not receivers:
             # No devices to route

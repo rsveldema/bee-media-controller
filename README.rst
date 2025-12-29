@@ -10,3 +10,17 @@ Local NMOS
 .. _`Briefcase`: https://briefcase.readthedocs.io/
 .. _`The BeeWare Project`: https://beeware.org/
 .. _`becoming a financial member of BeeWare`: https://beeware.org/contributing/membership
+
+
+Windows hints
+=================
+
+py -3.12 -m venv .venv
+
+Get-ExecutionPolicy
+Set-ExecutionPolicy RemoteSigned -Scope Process
+
+python -m venv .venv
+.venv\Scripts\activate
+python -m briefcase build
+python -m briefcase run
