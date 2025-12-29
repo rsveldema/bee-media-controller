@@ -3,6 +3,7 @@ Local NMOS
 """
 
 import asyncio
+import socket
 import toga
 from toga.style.pack import Pack, ROW, COLUMN
 from toga.app import AppStartupMethod, OnExitHandler, OnRunningHandler
@@ -70,6 +71,30 @@ class UIModel:
 class LocalNMOS(toga.App):
         
     # Matrix dimensions (must match draw_routing_matrix)
+    
+    def get_local_ip(self):
+        """Get the host's local IP address"""
+        try:
+            # Connect to an external address to determine local IP
+            # We don't actually send data, just use the connection to find our local IP
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect(("8.8.8.8", 80))
+            local_ip = s.getsockname()[0]
+            s.close()
+            return local_ip
+        except Exception:
+            return "Unable to determine IP"
+    
+    def about(self):
+        """Show about dialog with IP address information"""
+        ip_address = self.get_local_ip()
+        self.main_window.info_dialog(
+            "About LocalNMOS",
+            f"{self.formal_name}\n\n"
+            f"Version: {self.version}\n"
+            f"Host IP Address: {ip_address}\n\n"
+            f"Local NMOS device discovery and routing matrix."
+        )
     
     def draw_routing_matrix(self):
         """draw the routing matrix with on the canvas. On the horizonal axis we have the transmitting devices,
@@ -181,7 +206,11 @@ class LocalNMOS(toga.App):
         main_box = toga.Box(direction=ROW)
 
         devices_box = toga.Box(direction=COLUMN, style=Pack(width=300))
-        self.listbox = toga.DetailedList(data=self.model.devices, style=Pack(flex=1))
+        self.listbox = toga.DetailedList(
+            data=self.model.devices,
+            on_select=self.on_device_select,
+            style=Pack(flex=1)
+        )
         devices_box.add(toga.Label("NMOS Devices (MDNS Discovery)"))
         devices_box.add(self.listbox)
 
@@ -200,6 +229,16 @@ class LocalNMOS(toga.App):
         self.main_window.show()
 
         self.loop.call_soon_threadsafe(self.sync_task, "Hi")
+
+    def on_device_select(self, widget):
+        """Handler for when a device is selected in the list"""
+        if widget.selection:
+            device_name = widget.selection.title
+            self.main_window.info_dialog(
+                "Device Information",
+                f"Device Name: {device_name}\n\n"
+                f"Subtitle: {widget.selection.subtitle}"
+            )
 
     def on_device_added(self, device: NMOSDevice):
         """Callback when an NMOS device is discovered"""
@@ -311,21 +350,29 @@ class LocalNMOS(toga.App):
             # Disconnect
             receiver.remove_sender(sender)
             sender.remove_receiver(receiver)
-            print(f"Disconnected: {sender.list_entry.get('title', 'Sender')} -> {receiver.list_entry.get('title', 'Receiver')}")
-            
-            # TODO: Use IS-05 API to disconnect the actual devices
-            # await self.disconnect_devices(sender, receiver)
+            await self.disconnect_devices(sender, receiver)
         else:
             # Connect
             receiver.add_sender(sender)
             sender.add_receiver(receiver)
             print(f"Connected: {sender.list_entry.get('title', 'Sender')} -> {receiver.list_entry.get('title', 'Receiver')}")
             
-            # TODO: Use IS-05 API to connect the actual devices
-            # await self.connect_devices(sender, receiver)
+            await self.connect_devices(sender, receiver)
         
         # Redraw the matrix to show the change
         self.draw_routing_matrix()
+
+    async def connect_devices(self, sender: UI_NMOS_Node, receiver: UI_NMOS_Node):
+        """Use IS-05 API to connect sender to receiver by handing over the transport file from sender to receiver."""
+        print(f"Connecting devices via IS-05: {sender.list_entry.get('title', 'Sender')} -> {receiver.list_entry.get('title', 'Receiver')}")
+        if self.registry:
+            await self.registry.connect_sender_to_receiver(sender.device_id, receiver.device_id)
+
+    async def disconnect_devices(self, sender: UI_NMOS_Node, receiver: UI_NMOS_Node):
+        """Use IS-05 API to disconnect sender from receiver."""
+        print(f"Disconnecting devices via IS-05: {sender.list_entry.get('title', 'Sender')} -> {receiver.list_entry.get('title', 'Receiver')}")
+        if self.registry:
+            await self.registry.disconnect_sender_from_receiver(sender.device_id, receiver.device_id)
 
     async def on_exit(self):
         """Cleanup when the app is closing"""
