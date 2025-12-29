@@ -260,7 +260,84 @@ class LocalNMOS(toga.App):
         """When clicking on the routing matrix at (x, y), we need to compute the intersection of senders and receivers
         to find out which NMOSDevice sender and NMOSDevice receiver it was. We then use is-05 to connect the sender and receiver by handing the transport file from the sender to the receiver.
         """
-        pass
+        # Get all devices with senders/receivers
+        nodes = list(self.model.device_map.values())
+        
+        # Collect all unique senders and receivers (same logic as draw_routing_matrix)
+        all_senders = []
+        all_receivers = []
+        for node in nodes:
+            all_senders.extend(node.senders)
+            all_receivers.extend(node.receivers)
+        
+        # Remove duplicates while preserving order
+        senders = []
+        receivers = []
+        seen_senders = set()
+        seen_receivers = set()
+        
+        for sender in all_senders:
+            if sender.device_id not in seen_senders:
+                senders.append(sender)
+                seen_senders.add(sender.device_id)
+        
+        for receiver in all_receivers:
+            if receiver.device_id not in seen_receivers:
+                receivers.append(receiver)
+                seen_receivers.add(receiver.device_id)
+        
+        if not senders or not receivers:
+            # No devices to route
+            return
+        
+        # Matrix dimensions (must match draw_routing_matrix)
+        margin_left = 150
+        margin_top = 80
+        cell_width = 80
+        cell_height = 40
+        
+        matrix_width = len(senders) * cell_width
+        matrix_height = len(receivers) * cell_height
+        
+        # Check if click is within the matrix bounds
+        if x < margin_left or x > margin_left + matrix_width:
+            return
+        if y < margin_top or y > margin_top + matrix_height:
+            return
+        
+        # Calculate which cell was clicked
+        sender_idx = int((x - margin_left) / cell_width)
+        receiver_idx = int((y - margin_top) / cell_height)
+        
+        # Validate indices
+        if sender_idx < 0 or sender_idx >= len(senders):
+            return
+        if receiver_idx < 0 or receiver_idx >= len(receivers):
+            return
+        
+        sender = senders[sender_idx]
+        receiver = receivers[receiver_idx]
+        
+        # Toggle the routing connection
+        if sender in receiver.senders:
+            # Disconnect
+            receiver.remove_sender(sender)
+            sender.remove_receiver(receiver)
+            print(f"Disconnected: {sender.list_entry.get('title', 'Sender')} -> {receiver.list_entry.get('title', 'Receiver')}")
+            
+            # TODO: Use IS-05 API to disconnect the actual devices
+            # await self.disconnect_devices(sender, receiver)
+        else:
+            # Connect
+            receiver.add_sender(sender)
+            sender.add_receiver(receiver)
+            print(f"Connected: {sender.list_entry.get('title', 'Sender')} -> {receiver.list_entry.get('title', 'Receiver')}")
+            
+            # TODO: Use IS-05 API to connect the actual devices
+            # await self.connect_devices(sender, receiver)
+        
+        # Redraw the matrix to show the change
+        self.draw_routing_matrix()
 
     async def on_exit(self):
         """Cleanup when the app is closing"""
