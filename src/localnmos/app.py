@@ -68,6 +68,9 @@ class UIModel:
 
 
 class LocalNMOS(toga.App):
+        
+    # Matrix dimensions (must match draw_routing_matrix)
+    
     def draw_routing_matrix(self):
         """draw the routing matrix with on the canvas. On the horizonal axis we have the transmitting devices,
         on the vertical axis we have the receiving devices. A checkmark is drawn on the intersections where routing is active.
@@ -85,14 +88,8 @@ class LocalNMOS(toga.App):
         senders = nodes.copy()
         receivers = nodes.copy()
 
-        # Matrix dimensions and positioning
-        margin_left = 150
-        margin_top = 80
-        cell_width = 80
-        cell_height = 40
-
-        matrix_width = len(senders) * cell_width
-        matrix_height = len(receivers) * cell_height
+        matrix_width = len(senders) * self.cell_width
+        matrix_height = len(receivers) * self.cell_height
 
         # Draw matrix grid
         with self.canvas.context.Stroke(
@@ -100,45 +97,51 @@ class LocalNMOS(toga.App):
         ) as stroke:
             # Horizontal lines
             for i in range(len(receivers) + 1):
-                y = margin_top + i * cell_height
-                stroke.move_to(margin_left, y)
-                stroke.line_to(margin_left + matrix_width, y)
+                y = self.margin_top + i * self.cell_height
+                stroke.move_to(self.margin_left, y)
+                stroke.line_to(self.margin_left + matrix_width, y)
 
             # Vertical lines
             for i in range(len(senders) + 1):
-                x = margin_left + i * cell_width
-                stroke.move_to(x, margin_top)
-                stroke.line_to(x, margin_top + matrix_height)
+                x = self.margin_left + i * self.cell_width
+                stroke.move_to(x, self.margin_top)
+                stroke.line_to(x, self.margin_top + matrix_height)
 
         # Draw border
         with self.canvas.context.Stroke(
             line_width=2, color=rgb(100, 100, 100)
         ) as stroke:
-            stroke.rect(margin_left, margin_top, matrix_width, matrix_height)
+            stroke.rect(self.margin_left, self.margin_top, matrix_width, matrix_height)
 
         # Draw sender labels (horizontal, rotated)
         font = toga.Font(family=SANS_SERIF, size=12)
         for i, sender in enumerate(senders):
-            x = margin_left + i * cell_width + cell_width / 2
-            y = margin_top - 10
+            x = self.margin_left + i * self.cell_width + self.cell_width / 2
+            y = self.margin_top - 10
 
-            self.canvas.context.save()
+            # Apply transformations: translate then rotate
             self.canvas.context.translate(x, y)
-            self.canvas.context.rotate(-0.5)  # Rotate ~28 degrees
+            self.canvas.context.rotate(-0.785)  # Rotate -45 degrees (in radians)
 
             with self.canvas.context.Fill(color=rgb(60, 120, 180)) as fill:
                 label = sender.list_entry.get("title", f"Sender {i}")
                 fill.write_text(label[:15], 0, 0, font, Baseline.BOTTOM)
 
-            self.canvas.context.restore()
+            # Undo transformations: rotate back then translate back
+            self.canvas.context.rotate(0.785)  # Rotate back +45 degrees
+            self.canvas.context.translate(-x, -y)
 
-        # Draw receiver labels (vertical)
+        # Draw receiver labels (vertical) - positioned to the left of the matrix
         for i, receiver in enumerate(receivers):
-            y = margin_top + i * cell_height + cell_height / 2
+            y = self.margin_top + i * self.cell_height + self.cell_height / 2
 
+            label = receiver.list_entry.get("title", f"Receiver {i}")[:20]
+            # Measure text width for accurate right alignment
+            text_size = self.canvas.measure_text(label, font)
+            
             with self.canvas.context.Fill(color=rgb(180, 120, 60)) as fill:
-                label = receiver.list_entry.get("title", f"Receiver {i}")
-                fill.write_text(label[:20], margin_left - 140, y, font, Baseline.MIDDLE)
+                # Position text so it ends 15 pixels to the left of the matrix
+                fill.write_text(label, self.margin_left - text_size[0] - 15, y, font, Baseline.MIDDLE)
 
         # Draw routing connections (checkmarks)
         for receiver_idx, receiver in enumerate(receivers):
@@ -150,8 +153,8 @@ class LocalNMOS(toga.App):
                     continue
 
                 # Calculate cell center
-                x = margin_left + sender_idx * cell_width + cell_width / 2
-                y = margin_top + receiver_idx * cell_height + cell_height / 2
+                x = self.margin_left + sender_idx * self.cell_width + self.cell_width / 2
+                y = self.margin_top + receiver_idx * self.cell_height + self.cell_height / 2
 
                 # Draw checkmark
                 check_size = 15
@@ -167,6 +170,11 @@ class LocalNMOS(toga.App):
 
     def startup(self):
         """Construct and show the Toga application."""
+        self.margin_left = 150
+        self.margin_top = 80
+        self.cell_width = 40
+        self.cell_height = 40
+
         self.model = UIModel()
         self.registry = None  # Will be initialized in on_running
 
@@ -241,8 +249,23 @@ class LocalNMOS(toga.App):
         print("NMOS Registry started - discovering devices via MDNS...")
 
     def on_resize(self, widget, width, height, **kwargs):
-        # On resize, redraw the routing matrix
+        # On resize, recalculate margins to center the matrix
         if widget.context:
+            # Calculate matrix dimensions
+            nodes = list(self.model.device_map.values())
+            matrix_width = len(nodes) * self.cell_width
+            matrix_height = len(nodes) * self.cell_height
+            
+            # Center the matrix horizontally and vertically
+            label_space_left = 150  # Space for receiver labels on the left
+            label_space_top = 100   # Space for sender labels on top
+            
+            available_width = width - label_space_left
+            available_height = height - label_space_top
+            
+            self.margin_left = label_space_left + max(0, (available_width - matrix_width) / 2)
+            self.margin_top = label_space_top + max(0, (available_height - matrix_height) / 2)
+            
             self.draw_routing_matrix()
 
     async def on_press(self, widget, x, y, **kwargs):
@@ -260,24 +283,19 @@ class LocalNMOS(toga.App):
             # No devices to route
             return
         
-        # Matrix dimensions (must match draw_routing_matrix)
-        margin_left = 150
-        margin_top = 80
-        cell_width = 80
-        cell_height = 40
         
-        matrix_width = len(senders) * cell_width
-        matrix_height = len(receivers) * cell_height
+        matrix_width = len(senders) * self.cell_width
+        matrix_height = len(receivers) * self.cell_height
         
         # Check if click is within the matrix bounds
-        if x < margin_left or x > margin_left + matrix_width:
+        if x < self.margin_left or x > self.margin_left + matrix_width:
             return
-        if y < margin_top or y > margin_top + matrix_height:
+        if y < self.margin_top or y > self.margin_top + matrix_height:
             return
         
         # Calculate which cell was clicked
-        sender_idx = int((x - margin_left) / cell_width)
-        receiver_idx = int((y - margin_top) / cell_height)
+        sender_idx = int((x - self.margin_left) / self.cell_width)
+        receiver_idx = int((y - self.margin_top) / self.cell_height)
         
         # Validate indices
         if sender_idx < 0 or sender_idx >= len(senders):
