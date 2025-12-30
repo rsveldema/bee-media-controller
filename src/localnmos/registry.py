@@ -12,10 +12,11 @@ import sys
 import time
 import traceback
 from typing import Callable, List, Optional, Dict, Any
-from dataclasses import dataclass
 import socket
 from aiohttp import web
 from aiohttp.web_response import json_response
+
+from .nmos import NMOS_Device, NMOS_Node
 
 try:
     from zeroconf import ServiceBrowser, ServiceListener, Zeroconf, ServiceInfo, InterfaceChoice
@@ -43,56 +44,6 @@ if not logger.handlers:
     console_handler.setFormatter(formatter)
     logger.addHandler(console_handler)
     logger.setLevel(logging.INFO)
-
-
-@dataclass
-class NMOS_Device:
-    """Represents an NMOS device discovered on the network"""
-    node_id: str
-    device_id: str
-    senders: List['NMOS_Device']
-    receivers: List['NMOS_Device']
-
-    def __post_init__(self):
-        if self.senders is None:
-            self.senders = []
-        if self.receivers is None:
-            self.receivers = []
-
-@dataclass
-class NMOS_Node:
-    """Represents an NMOS Node discovered on the network"""
-
-    name: str
-    node_id: str
-    address: str
-    port: int
-    service_type: str
-    properties: Dict[str, Any]
-    devices: List[NMOS_Device]
-    version: str = "v1.3"
-    api_ver: str = "v1.3"
-
-    def __post_init__(self):
-        if self.devices is None:
-            self.devices = []
-        if self.properties is None:
-            self.properties = {}
-
-    @property
-    def base_url(self) -> str:
-        """Get the base URL for the device API"""
-        return f"http://{self.address}:{self.port}"
-
-    @property
-    def node_url(self) -> str:
-        """Get the node API URL"""
-        return f"{self.base_url}/x-nmos/node/{self.api_ver}"
-
-    @property
-    def connection_url(self) -> str:
-        """Get the connection API URL (IS-05)"""
-        return f"{self.base_url}/x-nmos/connection/{self.api_ver}"
 
 
 class NMOSServiceListener(ServiceListener):
@@ -257,6 +208,61 @@ class NMOSRegistry:
     async def disconnect_sender_from_receiver(self, sender_id: str, receiver_id: str):
         """Disconnect sender from receiver using IS-05 API"""
         pass
+
+    async def fetch_device_channels(self, node: NMOS_Node, device: NMOS_Device):
+        """Fetch channel information for a device using IS-08 Channel Mapping API"""
+        try:
+            # Query IS-08 API for channel mapping outputs (typical for devices with channels)
+            outputs_url = f"{node.channelmapping_url}/map/outputs"
+            inputs_url = f"{node.channelmapping_url}/map/inputs"
+            
+            channels = []
+            
+            async with aiohttp.ClientSession() as session:
+                # Fetch output channels
+                try:
+                    async with session.get(outputs_url, timeout=aiohttp.ClientTimeout(total=5)) as response:
+                        if response.status == 200:
+                            outputs_data = await response.json()
+                            for output in outputs_data:
+                                # Filter channels for this specific device
+                                if output.get('device_id') == device.device_id or 'device_id' not in output:
+                                    channels.append({
+                                        'type': 'output',
+                                        'id': output.get('id'),
+                                        'name': output.get('name', output.get('id')),
+                                        'channel_index': output.get('channel_index'),
+                                        'data': output
+                                    })
+                            logger.info(f"Fetched {len([c for c in channels if c['type'] == 'output'])} output channels for device {device.device_id}")
+                except Exception as e:
+                    logger.error(f"Could not fetch output channels from {outputs_url}: {e}")
+                
+                # Fetch input channels
+                try:
+                    async with session.get(inputs_url, timeout=aiohttp.ClientTimeout(total=5)) as response:
+                        if response.status == 200:
+                            inputs_data = await response.json()
+                            for input_ch in inputs_data:
+                                # Filter channels for this specific device
+                                if input_ch.get('device_id') == device.device_id or 'device_id' not in input_ch:
+                                    channels.append({
+                                        'type': 'input',
+                                        'id': input_ch.get('id'),
+                                        'name': input_ch.get('name', input_ch.get('id')),
+                                        'channel_index': input_ch.get('channel_index'),
+                                        'data': input_ch
+                                    })
+                            logger.info(f"Fetched {len([c for c in channels if c['type'] == 'input'])} input channels for device {device.device_id}")
+                except Exception as e:
+                    logger.error(f"Could not fetch input channels from {inputs_url}: {e}")
+            
+            device.channels = channels
+            return channels
+            
+        except Exception as e:
+            logger.error(f"Error fetching channels for device {device.device_id}: {e}")
+            return []
 
     async def start(self):
         """Start the NMOS registry and begin discovering devices"""
@@ -518,11 +524,20 @@ class NMOSRegistry:
         node = self.get_node_by_id(node_id)
         if node is None:
             return self.error_json_response({'status': 'bad node id'}, status=404)
+        
+        # Check if device already exists in this node
+        for existing_device in node.devices:
+            if existing_device.device_id == device_id:
+                logger.info(f"Device {device_id} already registered in node {node_id}, ignoring duplicate")
+                return json_response({'status': 'already-registered'}, status=200)
 
         senders = []
         receivers = []
         dev = NMOS_Device(node_id=node_id, device_id=device_id, senders=senders,receivers=receivers)
         node.devices.append(dev)
+        
+        # Fetch channel information from IS-08 API
+        asyncio.create_task(self.fetch_device_channels(node, dev))
         
         # Notify UI about device addition
         if self.device_added_callback:
@@ -558,6 +573,12 @@ class NMOSRegistry:
         parent = self.find_device(sender_device_id)
         if parent is None:
             return self.error_json_response({'status': 'bad parent ID'}, status=400)
+        
+        # Check if sender already exists in this device
+        for existing_sender in parent.senders:
+            if hasattr(existing_sender, 'device_id') and existing_sender.device_id == parent_device_id:
+                logger.info(f"Sender {parent_device_id} already registered in device {sender_device_id}, ignoring duplicate")
+                return json_response({'status': 'already-registered'}, status=200)
 
         if subscriptions is not None:
             receiver_id = subscriptions.get("receiver_id", "missing")
@@ -603,6 +624,12 @@ class NMOSRegistry:
         parent = self.find_device(receiver_device_id)
         if parent is None:
             return self.error_json_response({'status': 'bad parent ID'}, status=400)
+        
+        # Check if receiver already exists in this device
+        for existing_receiver in parent.receivers:
+            if hasattr(existing_receiver, 'device_id') and existing_receiver.device_id == parent_device_id:
+                logger.info(f"Receiver {parent_device_id} already registered in device {receiver_device_id}, ignoring duplicate")
+                return json_response({'status': 'already-registered'}, status=200)
 
         if subscriptions is not None:
             sender_id = subscriptions.get("sender_id", "missing")

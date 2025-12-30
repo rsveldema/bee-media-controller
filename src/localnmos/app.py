@@ -14,7 +14,8 @@ from toga.fonts import SANS_SERIF
 from toga.colors import WHITE, rgb
 from toga.sources import ListSource
 
-from .registry import NMOSRegistry, NMOS_Node
+from .registry import NMOSRegistry
+from .nmos import NMOS_Node
 
 # Build date - automatically set when the module is imported
 BUILD_DATE = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -244,6 +245,35 @@ class LocalNMOS(toga.App):
         ) as stroke:
             stroke.rect(self.margin_left, self.margin_top, matrix_width, matrix_height)
 
+        # Draw axis labels
+        font_label = toga.Font(family=SANS_SERIF, size=14, weight="bold")
+        
+        # Draw "SENDERS" label at the top center of the matrix (well above the rotated channel names)
+        senders_label = "SENDERS"
+        senders_label_size = self.canvas.measure_text(senders_label, font_label)
+        senders_x = self.margin_left + (matrix_width - senders_label_size[0]) / 2
+        senders_y = 10  # Position at the very top of the canvas
+        with self.canvas.context.Fill(color=rgb(40, 80, 140)) as fill:
+            fill.write_text(senders_label, senders_x, senders_y, font_label, Baseline.TOP)
+        
+        # Draw "RECEIVERS" label on the left side (rotated 90 degrees)
+        receivers_label = "RECEIVERS"
+        receivers_label_x_offset = 20  # Position close to the left edge
+        receivers_x = receivers_label_x_offset
+        receivers_y = self.margin_top + matrix_height / 2
+        
+        # Apply transformations: translate then rotate
+        self.canvas.context.translate(receivers_x, receivers_y)
+        self.canvas.context.rotate(-1.5708)  # Rotate -90 degrees (in radians)
+        
+        receivers_label_size = self.canvas.measure_text(receivers_label, font_label)
+        with self.canvas.context.Fill(color=rgb(140, 80, 40)) as fill:
+            fill.write_text(receivers_label, -receivers_label_size[0] / 2, 0, font_label, Baseline.MIDDLE)
+        
+        # Undo transformations
+        self.canvas.context.rotate(1.5708)  # Rotate back +90 degrees
+        self.canvas.context.translate(-receivers_x, -receivers_y)
+
         # Draw sender labels (horizontal, rotated) - show node/device/sender hierarchy
         font = toga.Font(family=SANS_SERIF, size=10)
         font_small = toga.Font(family=SANS_SERIF, size=8)
@@ -272,7 +302,10 @@ class LocalNMOS(toga.App):
             self.canvas.context.rotate(0.785)  # Rotate back +45 degrees
             self.canvas.context.translate(-x, -y)
 
-        # Draw receiver labels (vertical) - positioned to the left of the matrix, show hierarchy
+        # Draw receiver labels (vertical) - positioned to the right of "RECEIVERS", show hierarchy
+        # Calculate starting position for receiver labels (after "RECEIVERS" text)
+        receiver_label_start_x = receivers_label_x_offset + 35  # Leave space after "RECEIVERS"
+        
         for i, (receiver_node, receiver) in enumerate(receivers):
             y = self.margin_top + i * self.cell_height + self.cell_height / 2
 
@@ -282,22 +315,19 @@ class LocalNMOS(toga.App):
             receiver_label = f":{receiver.receiver_id[:6]}"
             full_label = f"{node_label}{device_label}{receiver_label}"
 
-            # Measure text width for accurate right alignment
-            text_size = self.canvas.measure_text(full_label, font)
-
-            # Draw node name in bold color
+            # Draw node name in bold color (left-aligned from receiver_label_start_x)
             with self.canvas.context.Fill(color=rgb(140, 80, 40)) as fill:
                 node_size = self.canvas.measure_text(node_label, font)
-                fill.write_text(node_label, self.margin_left - text_size[0] - 15, y - 4, font, Baseline.MIDDLE)
+                fill.write_text(node_label, receiver_label_start_x, y - 4, font, Baseline.MIDDLE)
 
             # Draw device label in lighter color
             with self.canvas.context.Fill(color=rgb(200, 140, 100)) as fill:
                 device_size = self.canvas.measure_text(device_label, font_small)
-                fill.write_text(device_label, self.margin_left - text_size[0] - 15 + node_size[0], y - 4, font_small, Baseline.MIDDLE)
+                fill.write_text(device_label, receiver_label_start_x + node_size[0], y - 4, font_small, Baseline.MIDDLE)
 
             # Draw receiver label in lightest color
             with self.canvas.context.Fill(color=rgb(220, 160, 120)) as fill:
-                fill.write_text(receiver_label, self.margin_left - text_size[0] - 15 + node_size[0] + device_size[0], y - 4, font_small, Baseline.MIDDLE)
+                fill.write_text(receiver_label, receiver_label_start_x + node_size[0] + device_size[0], y - 4, font_small, Baseline.MIDDLE)
 
         # Draw routing connections (checkmarks)
         # Connections are tracked between sender and receiver objects
@@ -422,6 +452,12 @@ class LocalNMOS(toga.App):
                     break
             
             if ui_device:
+                # Check if sender already exists
+                for existing_sender in ui_device.senders:
+                    if existing_sender.sender_id == sender_id:
+                        print(f"  Sender {sender_id} already exists in device {device_id}, ignoring duplicate")
+                        return
+                
                 # Create and add sender
                 sender = UI_NMOS_Sender(sender_id=sender_id, device=ui_device)
                 ui_device.senders.append(sender)
@@ -441,6 +477,12 @@ class LocalNMOS(toga.App):
                     break
             
             if ui_device:
+                # Check if receiver already exists
+                for existing_receiver in ui_device.receivers:
+                    if existing_receiver.receiver_id == receiver_id:
+                        print(f"  Receiver {receiver_id} already exists in device {device_id}, ignoring duplicate")
+                        return
+                
                 # Create and add receiver
                 receiver = UI_NMOS_Receiver(receiver_id=receiver_id, device=ui_device)
                 ui_device.receivers.append(receiver)
