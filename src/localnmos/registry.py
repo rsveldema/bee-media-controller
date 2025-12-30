@@ -441,8 +441,11 @@ class NMOSRegistry:
             self.device_heartbeats[nodeId] = timestamp
             return json_response({'health': timestamp}, status=200)
         except Exception as e:
-            logger.error(f"Error handling health check: {e}")
-            return json_response({'error': str(e)}, status=400)
+            return self.error_json_response({'error': str(e)}, status=400)
+
+    def error_json_response(self, err, status):
+        logger.error(f"return error: {err} with status {status}")
+        return json_response(err, status = status)
 
     def _handle_registration_node(self, request, resource_data: dict, api_version: str):
         # Register or re-register a node
@@ -499,26 +502,96 @@ class NMOSRegistry:
         controls = resource_data.get('controls', None)
 
         if node_id is None:
-            return json_response({'status': 'missing node id'}, status=404)
+            return self.error_json_response({'status': 'missing node id'}, status=404)
         if device_id is None:
-            return json_response({'status': 'missing device id'}, status=404)
+            return self.error_json_response({'status': 'missing device id'}, status=404)
 
         node = self.get_node_by_id(node_id)
         if node is None:
-            return json_response({'status': 'bad node id'}, status=404)
+            return self.error_json_response({'status': 'bad node id'}, status=404)
 
         senders = []
         receivers = []
         dev = NMOS_Device(node_id=node_id, device_id=device_id, senders=senders,receivers=receivers)
         node.devices.append(dev)
-
         return json_response({'status': 'registered'}, status=201)
 
-    def _handle_registration_sender(self, request, resource_data: dict):
+    def find_device(self, device_id: str) -> NMOS_Device | None:
+        for n in self.nodes.values():
+            for d in n.devices:
+                if d.device_id == device_id:
+                    return d
+        return None
+
+    def _handle_registration_sender(self, request, resource_data: Dict):
+        parent_device_id = resource_data.get('id', None)
+        sender_device_id = resource_data.get('device_id', None)
+        flow_id = resource_data.get('flow_id', None)
+        subscriptions = resource_data.get('subscription', None)
+
+        if parent_device_id is None:
+            return self.error_json_response({'status': 'parent id not found'}, status=400)
+        if sender_device_id is None:
+            return self.error_json_response({'status': 'parent id not found'}, status=400)
+        if sender_device_id == parent_device_id:
+            return self.error_json_response({'status': 'parent id == sender parent id'}, status=500)
+
+        parent = self.find_device(sender_device_id)
+        if parent is None:
+            return self.error_json_response({'status': 'bad parent ID'}, status=400)
+
+        if subscriptions is not None:
+            receiver_id = subscriptions.get("receiver_id", "missing")
+            if receiver_id == "missing":
+                return self.error_json_response({'status': 'missing receiver ID'}, status=400)
+
+            if receiver_id is not None:
+                receiver = self.find_device(receiver_id)
+                if receiver is None:
+                    return self.error_json_response({'status': f'bad receiver ID:{receiver_id}'}, status=400)
+
+                logger.info(f"linked sender node {parent.node_id} to receiver {receiver.device_id}")
+                parent.senders.append(receiver)
+            else:
+                logger.info("no subscriptions for sender yet")
+        else:
+            logger.info("no subscriptions for sender")
+
         return json_response({'status': 'registered'}, status=201)
 
     def _handle_registration_receiver(self, request, resource_data: dict):
-        return json_response({'status': 'registered'}, status=201)
+        parent_device_id = resource_data.get('id', None)
+        receiver_device_id = resource_data.get('device_id', None)
+        flow_id = resource_data.get('flow_id', None)
+        subscriptions = resource_data.get('subscription', None)
+
+        if parent_device_id is None:
+            return self.error_json_response({'status': 'parent id not found'}, status=400)
+        if sender_device_id is None:
+            return self.error_json_response({'status': 'parent id not found'}, status=400)
+        if sender_device_id == parent_device_id:
+            return self.error_json_response({'status': 'parent id == sender parent id'}, status=500)
+
+        parent = self.find_device(sender_device_id)
+        if parent is None:
+            return self.error_json_response({'status': 'bad parent ID'}, status=400)
+
+        if subscriptions is not None:
+            receiver_id = subscriptions.get("receiver_id", "missing")
+            if receiver_id == "missing":
+                return self.error_json_response({'status': 'missing receiver ID'}, status=400)
+
+            if receiver_id is not None:
+                receiver = self.find_device(receiver_id)
+                if receiver is None:
+                    return self.error_json_response({'status': f'bad receiver ID:{receiver_id}'}, status=400)
+
+                logger.info(f"linked sender node {parent.node_id} to receiver {receiver.device_id}")
+                parent.senders.append(receiver)
+            else:
+                logger.info("no subscriptions for sender yet")
+        else:
+            logger.info("no subscriptions for sender")
 
     def _handle_registration_source(self, request, resource_data: dict):
         return json_response({'status': 'registered'}, status=201)
@@ -560,7 +633,7 @@ class NMOSRegistry:
 
         except Exception as e:
             logger.error(f"Error handling registration: {e}")
-            return json_response({'error': str(e)}, status=400)
+            return self.error_json_response({'error': str(e)}, status=400)
 
     async def _handle_deregistration(self, request):
         """Handle device deregistration DELETE requests"""

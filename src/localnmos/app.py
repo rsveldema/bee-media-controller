@@ -4,6 +4,7 @@ Local NMOS
 
 import asyncio
 import socket
+from typing import List
 import toga
 from toga.style.pack import Pack, ROW, COLUMN
 from toga.app import AppStartupMethod, OnExitHandler, OnRunningHandler
@@ -14,6 +15,10 @@ from toga.sources import ListSource
 
 from .registry import NMOSRegistry, NMOS_Node
 
+class UI_NMOS_Device:
+    def __init__(self, device_id: str, parent: 'UI_NMOS_Node') -> None:
+        self.device_id = device_id
+        self.parent = parent
 
 class UI_NMOS_Node:
     """represents an NMOS Node"""
@@ -21,22 +26,22 @@ class UI_NMOS_Node:
     def __init__(self, node_id: str, list_entry: dict) -> None:
         self.node_id = node_id
         self.list_entry = list_entry
-        self.senders: list[UI_NMOS_Node] = []
-        self.receivers: list[UI_NMOS_Node] = []
+        self.senders: list[UI_NMOS_Device] = []
+        self.receivers: list[UI_NMOS_Device] = []
 
-    def add_sender(self, node: "UI_NMOS_Node"):
-        self.senders.append(node)
+    def add_sender(self, dev: "UI_NMOS_Device"):
+        self.senders.append(dev)
 
-    def add_receiver(self, node: "UI_NMOS_Node"):
-        self.receivers.append(node)
+    def add_receiver(self, dev: "UI_NMOS_Device"):
+        self.receivers.append(dev)
 
-    def remove_sender(self, node: "UI_NMOS_Node"):
-        if node in self.senders:
-            self.senders.remove(node)
+    def remove_sender(self, dev: "UI_NMOS_Device"):
+        if dev in self.senders:
+            self.senders.remove(dev)
 
-    def remove_receiver(self, node: "UI_NMOS_Node"):
-        if node in self.receivers:
-            self.receivers.remove(node)
+    def remove_receiver(self, dev: "UI_NMOS_Device"):
+        if dev in self.receivers:
+            self.receivers.remove(dev)
 
 
 class UIModel:
@@ -44,14 +49,21 @@ class UIModel:
         self.nodes = ListSource(accessors=["title", "subtitle", "icon"], data=[])
         self.node_map: dict[str, UI_NMOS_Node] = {}
 
+    def get_nodes(self) -> List[UI_NMOS_Node]:
+        map = self.node_map
+        ret: List[UI_NMOS_Node] = []
+        for n in map.values():
+            ret.append(n)
+        return ret
+
     def add_node(
         self,
         node_id: str,
-        dev: str,
+        node: str,
         subtitle: str,
         icon: toga.Icon = toga.Icon.DEFAULT_ICON,
     ):
-        entry = {"title": dev, "subtitle": subtitle, "icon": icon, "id" : node_id}
+        entry = {"title": node, "subtitle": subtitle, "icon": icon, "id" : node_id}
         self.nodes.append(entry)
         if node_id:
             self.node_map[node_id] = UI_NMOS_Node(
@@ -69,9 +81,6 @@ class UIModel:
 
 
 class LocalNMOS(toga.App):
-
-    # Matrix dimensions (must match draw_routing_matrix)
-
     def get_local_ip(self):
         """Get the host's local IP address"""
         try:
@@ -96,6 +105,21 @@ class LocalNMOS(toga.App):
             f"Local NMOS node discovery and routing matrix."
         )
 
+    def get_senders(self) -> List[UI_NMOS_Device]:
+        ret = []
+        for n in self.model.get_nodes():
+            s = n.senders
+            ret.extend(s)
+        return ret
+
+
+    def get_receivers(self) -> List[UI_NMOS_Device]:
+        ret = []
+        for n in self.model.get_nodes():
+            s = n.receivers
+            ret.extend(s)
+        return ret
+
     def draw_routing_matrix(self):
         """draw the routing matrix with on the canvas. On the horizonal axis we have the transmitting devices,
         on the vertical axis we have the receiving devices. A checkmark is drawn on the intersections where routing is active.
@@ -110,8 +134,8 @@ class LocalNMOS(toga.App):
         nodes = list(self.model.node_map.values())
 
         # Use all nodes as both potential senders and receivers
-        senders = nodes.copy()
-        receivers = nodes.copy()
+        senders = self.get_senders()
+        receivers = self.get_receivers()
 
         matrix_width = len(senders) * self.cell_width
         matrix_height = len(receivers) * self.cell_height
@@ -149,7 +173,7 @@ class LocalNMOS(toga.App):
             self.canvas.context.rotate(-0.785)  # Rotate -45 degrees (in radians)
 
             with self.canvas.context.Fill(color=rgb(60, 120, 180)) as fill:
-                label = sender.list_entry.get("title", f"Sender {i}")
+                label = sender.parent.list_entry.get("title", f"Sender {i}")
                 fill.write_text(label[:15], 0, 0, font, Baseline.BOTTOM)
 
             # Undo transformations: rotate back then translate back
@@ -160,7 +184,7 @@ class LocalNMOS(toga.App):
         for i, receiver in enumerate(receivers):
             y = self.margin_top + i * self.cell_height + self.cell_height / 2
 
-            label = receiver.list_entry.get("title", f"Receiver {i}")[:20]
+            label = receiver.parent.list_entry.get("title", f"Receiver {i}")[:20]
             # Measure text width for accurate right alignment
             text_size = self.canvas.measure_text(label, font)
 
@@ -170,7 +194,7 @@ class LocalNMOS(toga.App):
 
         # Draw routing connections (checkmarks)
         for receiver_idx, receiver in enumerate(receivers):
-            for sender in receiver.senders:
+            for sender in receiver.parent.senders:
                 # Find sender index
                 try:
                     sender_idx = senders.index(sender)
@@ -251,7 +275,7 @@ class LocalNMOS(toga.App):
         service_type = "Node" if "node" in node.service_type else "Service"
         self.model.add_node(
             node_id=node.node_id,
-            dev=node.name,
+            node=node.name,
             subtitle=f"{node.address}:{node.port} ({service_type}, {node.api_ver})",
         )
         self.listbox.refresh()
@@ -291,9 +315,12 @@ class LocalNMOS(toga.App):
         # On resize, recalculate margins to center the matrix
         if widget.context:
             # Calculate matrix dimensions
-            nodes = list(self.model.node_map.values())
-            matrix_width = len(nodes) * self.cell_width
-            matrix_height = len(nodes) * self.cell_height
+
+            senders = self.get_senders()
+            receivers = self.get_receivers()
+
+            matrix_width = len(receivers) * self.cell_width
+            matrix_height = len(senders) * self.cell_height
 
             # Center the matrix horizontally and vertically
             label_space_left = 150  # Space for receiver labels on the left
@@ -315,8 +342,8 @@ class LocalNMOS(toga.App):
         nodes = list(self.model.node_map.values())
 
         # Use all nodes as both potential senders and receivers
-        senders = nodes.copy()
-        receivers = nodes.copy()
+        senders = self.get_senders()
+        receivers = self.get_receivers()
 
         if not senders or not receivers:
             # No nodes to route
@@ -346,33 +373,32 @@ class LocalNMOS(toga.App):
         receiver = receivers[receiver_idx]
 
         # Toggle the routing connection
-        if sender in receiver.senders:
+        if sender in receiver.parent.senders:
             # Disconnect
-            receiver.remove_sender(sender)
-            sender.remove_receiver(receiver)
+            receiver.parent.remove_sender(sender)
+            sender.parent.remove_receiver(receiver)
             await self.disconnect_nodes(sender, receiver)
         else:
             # Connect
-            receiver.add_sender(sender)
-            sender.add_receiver(receiver)
-            print(f"Connected: {sender.list_entry.get('title', 'Sender')} -> {receiver.list_entry.get('title', 'Receiver')}")
-
+            receiver.parent.add_sender(sender)
+            sender.parent.add_receiver(receiver)
+            print(f"Connected: {sender.device_id} -> {receiver.device_id}")
             await self.connect_nodes(sender, receiver)
 
         # Redraw the matrix to show the change
         self.draw_routing_matrix()
 
-    async def connect_nodes(self, sender: UI_NMOS_Node, receiver: UI_NMOS_Node):
+    async def connect_nodes(self, sender: UI_NMOS_Device, receiver: UI_NMOS_Device):
         """Use IS-05 API to connect sender to receiver by handing over the transport file from sender to receiver."""
-        print(f"Connecting nodes via IS-05: {sender.list_entry.get('title', 'Sender')} -> {receiver.list_entry.get('title', 'Receiver')}")
+        print(f"Connecting nodes via IS-05: {sender.device_id} -> {receiver.device_id}")
         if self.registry:
-            await self.registry.connect_sender_to_receiver(sender.node_id, receiver.node_id)
+            await self.registry.connect_sender_to_receiver(sender.device_id, receiver.device_id)
 
-    async def disconnect_nodes(self, sender: UI_NMOS_Node, receiver: UI_NMOS_Node):
+    async def disconnect_nodes(self, sender: UI_NMOS_Device, receiver: UI_NMOS_Device):
         """Use IS-05 API to disconnect sender from receiver."""
-        print(f"Disconnecting nodes via IS-05: {sender.list_entry.get('title', 'Sender')} -> {receiver.list_entry.get('title', 'Receiver')}")
+        print(f"Disconnecting nodes via IS-05: {sender.device_id} -> {receiver.device_id}")
         if self.registry:
-            await self.registry.disconnect_sender_from_receiver(sender.node_id, receiver.node_id)
+            await self.registry.disconnect_sender_from_receiver(sender.device_id, receiver.device_id)
 
     async def on_exit(self):
         """Cleanup when the app is closing"""
