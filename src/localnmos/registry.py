@@ -49,9 +49,9 @@ if not logger.handlers:
 class NMOSServiceListener(ServiceListener):
     """Listens for NMOS services advertised via mDNS"""
 
-    def __init__(self, on_device_added: Callable, on_device_removed: Callable):
-        self.on_node_added = on_device_added
-        self.on_device_removed = on_device_removed
+    def __init__(self, on_node_added: Callable, on_node_removed: Callable):
+        self.on_node_added = on_node_added
+        self.on_node_removed = on_node_removed
         self.devices: Dict[str, NMOS_Node] = {}
 
 
@@ -70,8 +70,8 @@ class NMOSServiceListener(ServiceListener):
 
         if name in self.devices:
             device = self.devices.pop(name)
-            if self.on_device_removed:
-                self.on_device_removed(device)
+            if self.on_node_removed:
+                self.on_node_removed(device)
 
 
     def get_node_by_id(self, node_id:str) -> NMOS_Node|None:
@@ -125,6 +125,7 @@ class NMOSServiceListener(ServiceListener):
         devices=[]
 
         # we're pretty sure we've found a new Node, lets allocate it
+        logger.info(f"MDNS --> Discovered NMOS Node: {info.name} at {address}:{port} (API: {api_proto} {api_ver})")
         node = NMOS_Node(
             name=info.name,
             node_id=properties.get("node_id", info.name),
@@ -218,42 +219,50 @@ class NMOSRegistry:
             
             channels = []
             
+            logger.info(f"Fetching channels for device {device.device_id} from node {node.node_id}")
+            
             async with aiohttp.ClientSession() as session:
                 # Fetch output channels
                 try:
                     async with session.get(outputs_url, timeout=aiohttp.ClientTimeout(total=5)) as response:
-                        if response.status == 200:
-                            outputs_data = await response.json()
-                            for output in outputs_data:
-                                # Filter channels for this specific device
-                                if output.get('device_id') == device.device_id or 'device_id' not in output:
-                                    channels.append({
-                                        'type': 'output',
-                                        'id': output.get('id'),
-                                        'name': output.get('name', output.get('id')),
-                                        'channel_index': output.get('channel_index'),
-                                        'data': output
-                                    })
-                            logger.info(f"Fetched {len([c for c in channels if c['type'] == 'output'])} output channels for device {device.device_id}")
+                        match response.status:
+                            case 200:
+                                outputs_data = await response.json()
+                                for output in outputs_data:
+                                    # Filter channels for this specific device
+                                    if output.get('device_id') == device.device_id or 'device_id' not in output:
+                                        channels.append({
+                                            'type': 'output',
+                                            'id': output.get('id'),
+                                            'name': output.get('name', output.get('id')),
+                                            'channel_index': output.get('channel_index'),
+                                            'data': output
+                                        })
+                                logger.info(f"Fetched {len([c for c in channels if c['type'] == 'output'])} output channels for device {device.device_id}")
+                            case _:
+                                logger.error(f"Failed to fetch output channels from {outputs_url}, status: {response.status}")
                 except Exception as e:
                     logger.error(f"Could not fetch output channels from {outputs_url}: {e}")
                 
                 # Fetch input channels
                 try:
                     async with session.get(inputs_url, timeout=aiohttp.ClientTimeout(total=5)) as response:
-                        if response.status == 200:
-                            inputs_data = await response.json()
-                            for input_ch in inputs_data:
-                                # Filter channels for this specific device
-                                if input_ch.get('device_id') == device.device_id or 'device_id' not in input_ch:
-                                    channels.append({
-                                        'type': 'input',
-                                        'id': input_ch.get('id'),
-                                        'name': input_ch.get('name', input_ch.get('id')),
-                                        'channel_index': input_ch.get('channel_index'),
-                                        'data': input_ch
-                                    })
-                            logger.info(f"Fetched {len([c for c in channels if c['type'] == 'input'])} input channels for device {device.device_id}")
+                        match response.status:
+                            case 200:
+                                inputs_data = await response.json()
+                                for input_ch in inputs_data:
+                                    # Filter channels for this specific device
+                                    if input_ch.get('device_id') == device.device_id or 'device_id' not in input_ch:
+                                        channels.append({
+                                            'type': 'input',
+                                            'id': input_ch.get('id'),
+                                            'name': input_ch.get('name', input_ch.get('id')),
+                                            'channel_index': input_ch.get('channel_index'),
+                                            'data': input_ch
+                                        })
+                                logger.info(f"Fetched {len([c for c in channels if c['type'] == 'input'])} input channels for device {device.device_id}")
+                            case _:
+                                logger.error(f"Failed to fetch input channels from {inputs_url}, status: {response.status}")
                 except Exception as e:
                     logger.error(f"Could not fetch input channels from {inputs_url}: {e}")
             
@@ -289,8 +298,8 @@ class NMOSRegistry:
 
         # Create service listener
         self.listener = NMOSServiceListener(
-            on_device_added=self._on_node_added,
-            on_device_removed=self._on_node_removed,
+            on_node_added=self._on_node_added,
+            on_node_removed=self._on_node_removed,
         )
 
         # Browse for NMOS services
@@ -469,6 +478,25 @@ class NMOSRegistry:
 
         # Try to get address from request
         client_host = request.remote
+        
+        # Extract port from API endpoints in registration data
+        # NMOS nodes typically provide their API endpoints in the 'api' field
+        client_port = 80  # Default fallback
+        if 'api' in resource_data:
+            api_info = resource_data['api']
+            if 'endpoints' in api_info and len(api_info['endpoints']) > 0:
+                # Parse the first endpoint URL to get the port
+                endpoint = api_info['endpoints'][0]
+                if 'port' in endpoint:
+                    client_port = endpoint['port']
+                elif 'host' in endpoint:
+                    # Try to extract port from host string (e.g., "192.168.1.100:8080")
+                    host_str = endpoint['host']
+                    if ':' in host_str:
+                        try:
+                            client_port = int(host_str.split(':')[1])
+                        except (ValueError, IndexError):
+                            pass
 
         # Update heartbeat timestamp
         self.device_heartbeats[device_id] = time.time()
@@ -489,14 +517,14 @@ class NMOSRegistry:
             name=label,
             node_id=device_id,
             address=client_host,
-            port=80,  # Default HTTP port, may be in data
+            port=client_port,  # Default HTTP port, may be in data
             service_type='_nmos-register._tcp.local.',
             api_ver=api_version,
             properties=resource_data,
             devices=devices
         )
 
-        logger.info(f"Device registered via HTTP: {label} ({device_id}) from {client_host}")
+        logger.info(f"Device registered via HTTP: {label} ({device_id}) from {client_host}:{client_port}")
         # Add to devices and trigger callback
         self._on_node_added(device)
         return json_response({'status': 'registered', 'id': device_id}, status=201)
@@ -838,7 +866,8 @@ class NMOSRegistry:
         logger.info(
             f"Device discovered: {node.name} at {node.address}:{node.port}"
         )
-        self.nodes[node.node_id] = node
+        if node.node_id not in self.nodes:
+            self.nodes[node.node_id] = node
 
         if self.node_added_callback:
             # Schedule callback in event loop
