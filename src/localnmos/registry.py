@@ -50,8 +50,8 @@ class NMOS_Device:
     """Represents an NMOS device discovered on the network"""
     node_id: str
     device_id: str
-    senders: List[NMOS_Device]
-    receivers: List[NMOS_Device]
+    senders: List['NMOS_Device']
+    receivers: List['NMOS_Device']
 
     def __post_init__(self):
         if self.senders is None:
@@ -215,16 +215,25 @@ class NMOSRegistry:
         self,
         node_added_callback: Optional[Callable] = None,
         node_removed_callback: Optional[Callable] = None,
+        device_added_callback: Optional[Callable] = None,
+        sender_added_callback: Optional[Callable] = None,
+        receiver_added_callback: Optional[Callable] = None,
     ):
         """
         Initialize the NMOS registry
 
         Args:
-            device_added_callback: Callback function called when a device is discovered
-            device_removed_callback: Callback function called when a device is removed
+            node_added_callback: Callback function called when a node is discovered
+            node_removed_callback: Callback function called when a node is removed
+            device_added_callback: Callback function called when a device is registered
+            sender_added_callback: Callback function called when a sender is registered
+            receiver_added_callback: Callback function called when a receiver is registered
         """
         self.node_added_callback = node_added_callback
         self.node_removed_callback = node_removed_callback
+        self.device_added_callback = device_added_callback
+        self.sender_added_callback = sender_added_callback
+        self.receiver_added_callback = receiver_added_callback
 
         self.zeroconf: Optional[Zeroconf] = None
         self.async_zeroconf: Optional[AsyncZeroconf] = None
@@ -514,6 +523,16 @@ class NMOSRegistry:
         receivers = []
         dev = NMOS_Device(node_id=node_id, device_id=device_id, senders=senders,receivers=receivers)
         node.devices.append(dev)
+        
+        # Notify UI about device addition
+        if self.device_added_callback:
+            try:
+                asyncio.create_task(
+                    self._call_callback_with_params(self.device_added_callback, node_id, device_id)
+                )
+            except RuntimeError:
+                self.device_added_callback(node_id, device_id)
+        
         return json_response({'status': 'registered'}, status=201)
 
     def find_device(self, device_id: str) -> NMOS_Device | None:
@@ -556,6 +575,15 @@ class NMOSRegistry:
                 logger.info("no subscriptions for sender yet")
         else:
             logger.info("no subscriptions for sender")
+        
+        # Notify UI about sender addition
+        if self.sender_added_callback:
+            try:
+                asyncio.create_task(
+                    self._call_callback_with_params(self.sender_added_callback, parent.node_id, sender_device_id, parent_device_id)
+                )
+            except RuntimeError:
+                self.sender_added_callback(parent.node_id, sender_device_id, parent_device_id)
 
         return json_response({'status': 'registered'}, status=201)
 
@@ -567,31 +595,89 @@ class NMOSRegistry:
 
         if parent_device_id is None:
             return self.error_json_response({'status': 'parent id not found'}, status=400)
-        if sender_device_id is None:
-            return self.error_json_response({'status': 'parent id not found'}, status=400)
-        if sender_device_id == parent_device_id:
-            return self.error_json_response({'status': 'parent id == sender parent id'}, status=500)
+        if receiver_device_id is None:
+            return self.error_json_response({'status': 'receiver device id not found'}, status=400)
+        if receiver_device_id == parent_device_id:
+            return self.error_json_response({'status': 'parent id == receiver parent id'}, status=500)
 
-        parent = self.find_device(sender_device_id)
+        parent = self.find_device(receiver_device_id)
         if parent is None:
             return self.error_json_response({'status': 'bad parent ID'}, status=400)
 
         if subscriptions is not None:
-            receiver_id = subscriptions.get("receiver_id", "missing")
-            if receiver_id == "missing":
-                return self.error_json_response({'status': 'missing receiver ID'}, status=400)
+            sender_id = subscriptions.get("sender_id", "missing")
+            if sender_id == "missing":
+                return self.error_json_response({'status': 'missing sender ID'}, status=400)
 
-            if receiver_id is not None:
-                receiver = self.find_device(receiver_id)
-                if receiver is None:
-                    return self.error_json_response({'status': f'bad receiver ID:{receiver_id}'}, status=400)
+            if sender_id is not None:
+                sender = self.find_device(sender_id)
+                if sender is None:
+                    # Create unknown node and device for unknown sender device
+                    logger.warning(f"Unknown sender_id {sender_id} for receiver, creating unknown node and device")
+                    
+                    # Create or get unknown node
+                    unknown_node_id = f"unknown-node-{sender_id}"
+                    unknown_node = self.get_node_by_id(unknown_node_id)
+                    
+                    if unknown_node is None:
+                        # Create new unknown node
+                        client_host = request.remote
+                        unknown_node = NMOS_Node(
+                            name="unknown",
+                            node_id=unknown_node_id,
+                            address=client_host,
+                            port=80,
+                            service_type='_nmos-register._tcp.local.',
+                            api_ver="v1.3",
+                            properties={},
+                            devices=[]
+                        )
+                        self.nodes[unknown_node_id] = unknown_node
+                        
+                        # Notify about new node
+                        if self.node_added_callback:
+                            try:
+                                asyncio.create_task(
+                                    self._call_callback(self.node_added_callback, unknown_node)
+                                )
+                            except RuntimeError:
+                                self.node_added_callback(unknown_node)
+                    
+                    # Create the sender device and add to unknown node
+                    sender = NMOS_Device(
+                        node_id=unknown_node_id,
+                        device_id=sender_id,
+                        senders=[],
+                        receivers=[]
+                    )
+                    unknown_node.devices.append(sender)
+                    
+                    # Notify UI about device addition
+                    if self.device_added_callback:
+                        try:
+                            asyncio.create_task(
+                                self._call_callback_with_params(self.device_added_callback, unknown_node_id, sender_id)
+                            )
+                        except RuntimeError:
+                            self.device_added_callback(unknown_node_id, sender_id)
 
-                logger.info(f"linked sender node {parent.node_id} to receiver {receiver.device_id}")
-                parent.senders.append(receiver)
+                logger.info(f"linked receiver node {parent.node_id} to sender {sender.device_id}")
+                parent.receivers.append(sender)
             else:
-                logger.info("no subscriptions for sender yet")
+                logger.info("no subscriptions for receiver yet")
         else:
-            logger.info("no subscriptions for sender")
+            logger.info("no subscriptions for receiver")
+        
+        # Notify UI about receiver addition
+        if self.receiver_added_callback:
+            try:
+                asyncio.create_task(
+                    self._call_callback_with_params(self.receiver_added_callback, parent.node_id, receiver_device_id, parent_device_id)
+                )
+            except RuntimeError:
+                self.receiver_added_callback(parent.node_id, receiver_device_id, parent_device_id)
+        
+        return json_response({'status': 'registered'}, status=201)
 
     def _handle_registration_source(self, request, resource_data: dict):
         return json_response({'status': 'registered'}, status=201)
@@ -759,3 +845,17 @@ class NMOSRegistry:
             await callback(device)
         else:
             callback(device)
+    
+    async def _call_callback_with_params(self, callback: Callable, *args):
+        """Helper to call callbacks with multiple parameters asynchronously"""
+        if inspect.iscoroutinefunction(callback):
+            await callback(*args)
+        else:
+            callback(*args)
+    
+    async def _call_callback_with_params(self, callback: Callable, *args):
+        """Helper to call callbacks with multiple parameters asynchronously"""
+        if inspect.iscoroutinefunction(callback):
+            await callback(*args)
+        else:
+            callback(*args)
