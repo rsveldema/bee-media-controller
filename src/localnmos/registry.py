@@ -214,6 +214,73 @@ class NMOSRegistry:
         """Disconnect sender from receiver using IS-05 API"""
         pass
 
+    async def connect_channel_mapping(self, sender_node: NMOS_Node, sender_device: NMOS_Device,
+                                     output_dev_id: str, output_chan_id: str,
+                                     receiver_node: NMOS_Node, receiver_device: NMOS_Device,
+                                     input_dev_id: str, input_chan_id: str):
+        """Connect an output channel to an input channel using IS-08 API"""
+        try:
+            # Build the IS-08 channel mapping API URL for activations
+            activations_url = f"{sender_node.channelmapping_url}/map/activations"
+            
+            # Prepare the activation request according to IS-08 spec
+            # Use immediate activation with the output-to-input channel mapping
+            activation_data = {
+                "activation": {
+                    "mode": "activate_immediate"
+                },
+                "action": {
+                    output_dev_id: {
+                        output_chan_id: {
+                            "input": input_dev_id,
+                            "channel_index": input_chan_id
+                        }
+                    }
+                }
+            }
+            
+            async with aiohttp.ClientSession() as session:
+                # POST request to /map/activations for immediate activation
+                async with session.post(activations_url, json=activation_data) as response:
+                    if response.status in [200, 202]:
+                        logger.info(f"Successfully mapped output channel {output_chan_id} to input channel {input_chan_id}")
+                        # Refresh the channel data
+                        await self.fetch_device_channels(sender_node, sender_device)
+                    else:
+                        error_text = await response.text()
+                        logger.error(f"Failed to set channel mapping: {response.status} - {error_text}: tried to post: {activation_data}")
+        except Exception as e:
+            logger.error(f"Error connecting channel mapping: {e}")
+
+    async def disconnect_channel_mapping(self, sender_node: NMOS_Node, sender_device: NMOS_Device,
+                                        output_dev_id: str, output_chan_id: str):
+        """Disconnect an output channel mapping using IS-08 API"""
+        try:
+            # Build the IS-08 channel mapping API URL
+            map_url = f"{sender_node.channelmapping_url}/map/active"
+            
+            # Prepare the mapping data to clear the mapping
+            # Setting input to null or empty string clears the mapping
+            mapping_data = {
+                output_chan_id: {
+                    "input": None,
+                    "channel_index": None
+                }
+            }
+            
+            async with aiohttp.ClientSession() as session:
+                # PATCH request to clear the active mapping
+                async with session.patch(map_url, json=mapping_data) as response:
+                    if response.status in [200, 202]:
+                        logger.info(f"Successfully cleared mapping for output channel {output_chan_id}")
+                        # Refresh the channel data
+                        await self.fetch_device_channels(sender_node, sender_device)
+                    else:
+                        error_text = await response.text()
+                        logger.error(f"Failed to clear channel mapping: {response.status} - {error_text}")
+        except Exception as e:
+            logger.error(f"Error disconnecting channel mapping: {e}")
+
     async def _fetch_is08_resources(
         self,
         resource_type: str,

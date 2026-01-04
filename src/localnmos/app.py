@@ -263,10 +263,49 @@ class LocalNMOS(toga.App):
 
 
     def _draw_checkmarks_for_routing_connections(self, senders, receivers, matrix_width, matrix_height):
-        # Draw routing connections (checkmarks)
+        # Draw routing connections (checkmarks) based on channel-level mappings
         for receiver_idx, r_conn in enumerate(receivers):
             for sender_idx, s_conn in enumerate(senders):
-                if s_conn.endpoint in r_conn.endpoint.connected_senders:
+                # Check if there's a channel-level connection
+                is_connected = False
+                
+                if s_conn.channel and r_conn.channel and self.registry:
+                    # Get the NMOS node and device for the sender
+                    sender_node = self.registry.nodes.get(s_conn.node.node_id)
+                    if sender_node:
+                        for nmos_device in sender_node.devices:
+                            if nmos_device.device_id != s_conn.device.device_id:
+                                continue
+                                
+                            # Find the specific output channel in the NMOS device
+                            for output_dev in nmos_device.is08_output_channels:
+                                for output_chan in output_dev.channels:
+                                    # Prefer exact ID match if both have IDs
+                                    output_match = False
+                                    if s_conn.channel.id and output_chan.id:
+                                        output_match = (output_chan.id == s_conn.channel.id)
+                                    elif output_chan.label == s_conn.channel.name:
+                                        output_match = True
+                                    
+                                    if output_match:
+                                        # Check if this specific output is mapped to the specific input channel
+                                        if output_chan.mapped_device:
+                                            # Prefer exact ID match if both have IDs
+                                            if r_conn.channel.id and output_chan.mapped_device.id:
+                                                is_connected = (output_chan.mapped_device.id == r_conn.channel.id)
+                                            elif output_chan.mapped_device.label == r_conn.channel.name:
+                                                is_connected = True
+                                        break
+                                if is_connected:
+                                    break
+                            break
+                
+                # Fallback: if no channels, check sender-to-receiver connection
+                if not is_connected and not s_conn.channel and not r_conn.channel:
+                    if s_conn.endpoint in r_conn.endpoint.connected_senders:
+                        is_connected = True
+                
+                if is_connected:
                     # Calculate cell center
                     x = self.margin_left + sender_idx * self.cell_width + self.cell_width / 2
                     y = self.margin_top + receiver_idx * self.cell_height + self.cell_height / 2
@@ -344,7 +383,7 @@ class LocalNMOS(toga.App):
 
             # Draw channel label
             if s_conn.channel:
-                channel_label = s_conn.channel.name[:8]
+                channel_label = s_conn.channel.name[:24]
                 with self.canvas.context.Fill(color=rgb(180, 200, 240)) as fill:
                     fill.write_text(channel_label, 0, 30, font_chan, Baseline.BOTTOM)
 
@@ -378,7 +417,7 @@ class LocalNMOS(toga.App):
             
             # Draw channel label (indented for sub-row appearance)
             if r_conn.channel:
-                channel_label = r_conn.channel.name[:8]
+                channel_label = r_conn.channel.name[:24]
                 # Indent channel labels to show they're sub-items under the receiver
                 channel_indent = 20 if r_conn.endpoint == prev_receiver else 0
                 with self.canvas.context.Fill(color=rgb(240, 200, 180)) as fill:
@@ -707,8 +746,8 @@ class LocalNMOS(toga.App):
             self.draw_routing_matrix()
 
     async def on_press(self, widget, x, y, **kwargs):
-        """When clicking on the routing matrix at (x, y), we need to compute the intersection of senders and receivers
-        to find out which NMOSNode sender and NMOSNode receiver it was. We then use is-05 to connect the sender and receiver by handing the transport file from the sender to the receiver.
+        """When clicking on the routing matrix at (x, y), toggle the channel mapping between output and input channels.
+        Uses IS-08 channel mapping API to update the routing.
         """
         # Get all nodes (same logic as draw_routing_matrix)
         nodes = list(self.model.node_map.values())
@@ -720,7 +759,6 @@ class LocalNMOS(toga.App):
         if not senders or not receivers:
             # No nodes to route
             return
-
 
         matrix_width = len(senders) * self.cell_width
         matrix_height = len(receivers) * self.cell_height
@@ -744,24 +782,151 @@ class LocalNMOS(toga.App):
         s_conn = senders[sender_idx]
         r_conn = receivers[receiver_idx]
 
-        sender = s_conn.endpoint
-        receiver = r_conn.endpoint
-
-        # Toggle the routing connection
-        if sender in receiver.connected_senders:
-            # Disconnect
-            receiver.connected_senders.remove(sender)
-            sender.connected_receivers.remove(receiver)
-            await self.disconnect_nodes(sender, receiver)
+        # Handle channel-level mapping if both have channels
+        if s_conn.channel and r_conn.channel:
+            await self._toggle_channel_mapping(s_conn, r_conn)
         else:
-            # Connect
-            receiver.connected_senders.append(sender)
-            sender.connected_receivers.append(receiver)
-            print(f"Connected: {s_conn.node.list_entry.get('title', 'Node')} / {s_conn.device.device_id} / {sender.sender_id} -> {r_conn.node.list_entry.get('title', 'Node')} / {r_conn.device.device_id} / {receiver.receiver_id}")
-            await self.connect_nodes(sender, receiver)
+            # Fallback to device-level connection for devices without channels
+            sender = s_conn.endpoint
+            receiver = r_conn.endpoint
+
+            # Toggle the routing connection
+            if sender in receiver.connected_senders:
+                # Disconnect
+                receiver.connected_senders.remove(sender)
+                sender.connected_receivers.remove(receiver)
+                await self.disconnect_nodes(sender, receiver)
+            else:
+                # Connect
+                receiver.connected_senders.append(sender)
+                sender.connected_receivers.append(receiver)
+                print(f"Connected: {s_conn.node.list_entry.get('title', 'Node')} / {s_conn.device.device_id} / {sender.sender_id} -> {r_conn.node.list_entry.get('title', 'Node')} / {r_conn.device.device_id} / {receiver.receiver_id}")
+                await self.connect_nodes(sender, receiver)
 
         # Redraw the matrix to show the change
         self.draw_routing_matrix()
+
+    async def _toggle_channel_mapping(self, s_conn: UI_Matrix_Connection, r_conn: UI_Matrix_Connection):
+        """Toggle the mapping between an output channel and an input channel."""
+        if not self.registry:
+            return
+
+        # Get the NMOS node and device for the sender (output)
+        sender_node = self.registry.nodes.get(s_conn.node.node_id)
+        if not sender_node:
+            return
+
+        # Find the NMOS device and output channel
+        target_output_chan = None
+        target_output_dev = None
+        target_nmos_device = None
+        
+        for nmos_device in sender_node.devices:
+            if nmos_device.device_id != s_conn.device.device_id:
+                continue
+                
+            # Find the specific output channel - prefer ID match, then label
+            for output_dev in nmos_device.is08_output_channels:
+                for output_chan in output_dev.channels:
+                    # Prefer exact ID match if both have IDs
+                    if s_conn.channel.id and output_chan.id:
+                        if output_chan.id == s_conn.channel.id:
+                            target_output_chan = output_chan
+                            target_output_dev = output_dev
+                            target_nmos_device = nmos_device
+                            break
+                    # Fallback to label match only if no ID available
+                    elif output_chan.label == s_conn.channel.name:
+                        target_output_chan = output_chan
+                        target_output_dev = output_dev
+                        target_nmos_device = nmos_device
+                        break
+                if target_output_chan:
+                    break
+            if target_output_chan:
+                break
+        
+        if not target_output_chan:
+            print(f"Warning: Could not find output channel {s_conn.channel.name} (ID: {s_conn.channel.id})")
+            return
+        
+        # Check if currently mapped to this specific input
+        is_currently_mapped = False
+        if target_output_chan.mapped_device:
+            # Prefer ID match if both have IDs
+            if r_conn.channel.id and target_output_chan.mapped_device.id:
+                is_currently_mapped = (target_output_chan.mapped_device.id == r_conn.channel.id)
+            # Fallback to label match
+            elif target_output_chan.mapped_device.label == r_conn.channel.name:
+                is_currently_mapped = True
+        
+        if is_currently_mapped:
+            # Disconnect: clear the mapping for this specific channel only
+            target_output_chan.mapped_device = None
+            target_output_chan.mapped_channel = None
+            print(f"Disconnected channel: {s_conn.node.list_entry.get('title', 'Node')} / {target_output_chan.label} -> {r_conn.node.list_entry.get('title', 'Node')} / {r_conn.channel.name}")
+            
+            # Update via IS-08 API
+            await self.registry.disconnect_channel_mapping(
+                sender_node,
+                target_nmos_device,
+                target_output_dev.id,
+                target_output_chan.id
+            )
+        else:
+            # Connect: set the mapping to this input channel
+            receiver_node = self.registry.nodes.get(r_conn.node.node_id)
+            if not receiver_node:
+                print(f"Warning: Could not find receiver node {r_conn.node.node_id}")
+                return
+            
+            target_input_chan = None
+            target_input_dev = None
+            target_recv_device = None
+            
+            for recv_nmos_device in receiver_node.devices:
+                if recv_nmos_device.device_id != r_conn.device.device_id:
+                    continue
+                    
+                for input_dev in recv_nmos_device.is08_input_channels:
+                    for input_chan in input_dev.channels:
+                        # Prefer exact ID match if both have IDs
+                        if r_conn.channel.id and input_chan.id:
+                            if input_chan.id == r_conn.channel.id:
+                                target_input_chan = input_chan
+                                target_input_dev = input_dev
+                                target_recv_device = recv_nmos_device
+                                break
+                        # Fallback to label match only if no ID available
+                        elif input_chan.label == r_conn.channel.name:
+                            target_input_chan = input_chan
+                            target_input_dev = input_dev
+                            target_recv_device = recv_nmos_device
+                            break
+                    if target_input_chan:
+                        break
+                if target_input_chan:
+                    break
+            
+            if not target_input_chan:
+                print(f"Warning: Could not find input channel {r_conn.channel.name} (ID: {r_conn.channel.id})")
+                return
+            
+            # Update the mapping for this specific channel only
+            target_output_chan.mapped_device = target_input_chan
+            print(f"Connected channel: {s_conn.node.list_entry.get('title', 'Node')} / {target_output_chan.label} -> {r_conn.node.list_entry.get('title', 'Node')} / {target_input_chan.label}")
+            
+            # Update via IS-08 API
+            await self.registry.connect_channel_mapping(
+                sender_node,
+                target_nmos_device,
+                target_output_dev.id,
+                target_output_chan.id,
+                receiver_node,
+                target_recv_device,
+                target_input_dev.id,
+                target_input_chan.id
+            )
 
     async def connect_nodes(self, sender: UI_NMOS_Sender, receiver: UI_NMOS_Receiver):
         """Use IS-05 API to connect sender to receiver by handing over the transport file from sender to receiver."""
