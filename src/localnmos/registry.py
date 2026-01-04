@@ -171,6 +171,7 @@ class NMOSRegistry:
         device_added_callback: Optional[Callable] = None,
         sender_added_callback: Optional[Callable] = None,
         receiver_added_callback: Optional[Callable] = None,
+        channel_updated_callback: Optional[Callable] = None,
     ):
         """
         Initialize the NMOS registry
@@ -181,12 +182,14 @@ class NMOSRegistry:
             device_added_callback: Callback function called when a device is registered
             sender_added_callback: Callback function called when a sender is registered
             receiver_added_callback: Callback function called when a receiver is registered
+            channel_updated_callback: Callback function called when device channels are updated
         """
         self.node_added_callback = node_added_callback
         self.node_removed_callback = node_removed_callback
         self.device_added_callback = device_added_callback
         self.sender_added_callback = sender_added_callback
         self.receiver_added_callback = receiver_added_callback
+        self.channel_updated_callback = channel_updated_callback
 
         self.zeroconf: Optional[Zeroconf] = None
         self.async_zeroconf: Optional[AsyncZeroconf] = None
@@ -390,6 +393,15 @@ class NMOSRegistry:
                 device.is08_output_channels = outputs
 
             logger.debug(f"---------------------- Found channels: {inputs}, {outputs}")
+
+            # Notify UI about channel updates
+            if self.channel_updated_callback:
+                try:
+                    asyncio.create_task(
+                        self._call_callback_with_params(self.channel_updated_callback, node.node_id, device.device_id)
+                    )
+                except RuntimeError:
+                    self.channel_updated_callback(node.node_id, device.device_id)
 
         except Exception as e:
             logger.error(f"Error fetching channels for device {device.device_id}: {e}")

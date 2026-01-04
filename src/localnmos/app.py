@@ -32,7 +32,7 @@ class UI_NMOS_Channel:
         self.name = name
 
 class UI_Matrix_Connection:
-    def __init__(self, endpoint: 'UI_NMOS_Sender' | 'UI_NMOS_Receiver', channel: 'UI_NMOS_Channel' | None):
+    def __init__(self, endpoint: 'UI_NMOS_Sender | UI_NMOS_Receiver', channel: 'UI_NMOS_Channel | None' ):
         self.endpoint = endpoint
         self.channel = channel
         self.device = endpoint.device
@@ -53,7 +53,7 @@ class UI_NMOS_Sender:
         self.device = device
         self.parent = device.parent  # Reference to node for convenience
         self.connected_receivers: list['UI_NMOS_Receiver'] = []
-        self.channels: list[UI_NMOS_Channel] = [c for c in device.channels if c.type == 'output']
+        self.channels: list[UI_NMOS_Channel] = [c for c in device.channels if c.type == ChannelType.OUTPUT]
 
 
 class UI_NMOS_Receiver:
@@ -62,7 +62,7 @@ class UI_NMOS_Receiver:
         self.device = device
         self.parent = device.parent  # Reference to node for convenience
         self.connected_senders: list[UI_NMOS_Sender] = []
-        self.channels: list[UI_NMOS_Channel] = [c for c in device.channels if c.type == 'input']
+        self.channels: list[UI_NMOS_Channel] = [c for c in device.channels if c.type == ChannelType.INPUT]
 
 
 class UI_NMOS_Node:
@@ -375,14 +375,14 @@ class LocalNMOS(toga.App):
 
                 with self.canvas.context.Fill(color=rgb(220, 160, 120)) as fill:
                     fill.write_text(receiver_id_label, receiver_label_start_x + node_size[0] + device_size[0], y - 4, font_small, Baseline.MIDDLE)
-
-            # Draw channel label
+            
+            # Draw channel label (indented for sub-row appearance)
             if r_conn.channel:
                 channel_label = r_conn.channel.name[:8]
+                # Indent channel labels to show they're sub-items under the receiver
+                channel_indent = 20 if r_conn.endpoint == prev_receiver else 0
                 with self.canvas.context.Fill(color=rgb(240, 200, 180)) as fill:
-                    # Position channel label further to the right
-                    channel_x = receiver_label_start_x + 100  # Adjust as needed
-                    fill.write_text(channel_label, channel_x, y - 4, font_chan, Baseline.MIDDLE)
+                    fill.write_text(channel_label, receiver_label_start_x + channel_indent, y + 8, font_chan, Baseline.MIDDLE)
 
             prev_receiver = r_conn.endpoint
 
@@ -417,6 +417,11 @@ class LocalNMOS(toga.App):
 
         self.canvas.redraw()
 
+    def refresh_matrix_command(self, widget):
+        """Handler for the Refresh Routing Matrix menu command"""
+        print("Refreshing routing matrix...")
+        self.draw_routing_matrix()
+
     def startup(self):
         """Construct and show the Toga application."""
         self.margin_left = 150
@@ -426,6 +431,15 @@ class LocalNMOS(toga.App):
 
         self.model = UIModel()
         self.registry = None  # Will be initialized in on_running
+
+        # Create menu commands
+        refresh_command = toga.Command(
+            self.refresh_matrix_command,
+            text="Refresh Routing Matrix",
+            tooltip="Refresh the routing matrix display",
+            group=toga.Group.VIEW
+        )
+        self.commands.add(refresh_command)
 
         main_box = toga.Box(direction=ROW)
 
@@ -580,12 +594,14 @@ class LocalNMOS(toga.App):
 
                         ui_device.channels = []
 
+                        print(f" examine device channels: {dev.is08_input_channels}, {dev.is08_output_channels}")
+
                         for d in dev.is08_input_channels:
                             for c in d.channels:
-                                ui_device.channels.append(UI_NMOS_Channel(type="input", id=c.id, name=c.label))
+                                ui_device.channels.append(UI_NMOS_Channel(type=ChannelType.INPUT, id=c.id, name=c.label))
                         for d in dev.is08_output_channels:
                             for c in d.channels:
-                                ui_device.channels.append(UI_NMOS_Channel(type="output", id=c.id, name=c.label))
+                                ui_device.channels.append(UI_NMOS_Channel(type=ChannelType.OUTPUT, id=c.id, name=c.label))
                         break
 
             ui_node.add_device(ui_device)
@@ -599,6 +615,51 @@ class LocalNMOS(toga.App):
     def on_receiver_added(self, node_id: str, device_id: str, receiver_id: str):
         """Callback when a receiver is registered to a device"""
         self.loop.call_soon_threadsafe(self.add_receiver_to_device, node_id, device_id, receiver_id)
+
+    def on_channel_updated(self, node_id: str, device_id: str):
+        """Callback when device channels are updated"""
+        self.loop.call_soon_threadsafe(self._on_channel_updated_ui, node_id, device_id)
+
+    def _on_channel_updated_ui(self, node_id: str, device_id: str):
+        """UI update for channel changes (runs on main thread)"""
+        print(f"Channels updated for device {device_id} on node {node_id}")
+        if node_id in self.model.node_map:
+            ui_node = self.model.node_map[node_id]
+            
+            # Find the UI device
+            ui_device = None
+            for dev in ui_node.devices:
+                if dev.device_id == device_id:
+                    ui_device = dev
+                    break
+            
+            if ui_device and self.registry:
+                # Get the NMOS_Device to access updated channels
+                nmos_node = self.registry.nodes.get(node_id)
+                if nmos_node:
+                    for nmos_device in nmos_node.devices:
+                        if nmos_device.device_id == device_id:
+                            # Update UI device channels
+                            ui_device.channels = []
+                            
+                            for d in nmos_device.is08_input_channels:
+                                for c in d.channels:
+                                    ui_device.channels.append(UI_NMOS_Channel(type=ChannelType.INPUT, id=c.id, name=c.label))
+                            for d in nmos_device.is08_output_channels:
+                                for c in d.channels:
+                                    ui_device.channels.append(UI_NMOS_Channel(type=ChannelType.OUTPUT, id=c.id, name=c.label))
+                            
+                            # Update senders and receivers with new channel information
+                            for sender in ui_device.senders:
+                                sender.channels = [c for c in ui_device.channels if c.type == ChannelType.OUTPUT]
+                            for receiver in ui_device.receivers:
+                                receiver.channels = [c for c in ui_device.channels if c.type == ChannelType.INPUT]
+                            
+                            print(f"  Updated {len(ui_device.channels)} channels for device {device_id}")
+                            break
+                
+                # Redraw the routing matrix with updated channels
+                self.draw_routing_matrix()
 
     def sync_task(self, arg: str):
         print(f"running sync task: {arg}")
@@ -617,6 +678,7 @@ class LocalNMOS(toga.App):
             device_added_callback=self.on_device_added,
             sender_added_callback=self.on_sender_added,
             receiver_added_callback=self.on_receiver_added,
+            channel_updated_callback=self.on_channel_updated,
         )
         await self.registry.start()
         print("NMOS Registry started - discovering nodes via MDNS...")
