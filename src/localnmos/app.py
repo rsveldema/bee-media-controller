@@ -6,6 +6,7 @@ import asyncio
 import socket
 from typing import List
 from datetime import datetime
+from enum import Enum
 import toga
 from toga.style.pack import Pack, ROW, COLUMN
 from toga.app import AppStartupMethod, OnExitHandler, OnRunningHandler
@@ -20,13 +21,30 @@ from .nmos import NMOS_Node
 # Build date - automatically set when the module is imported
 BUILD_DATE = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
+class ChannelType(Enum):
+    INPUT = "input"
+    OUTPUT = "output"
+
+class UI_NMOS_Channel:
+    def __init__(self, type: ChannelType, id: str, name: str):
+        self.type = type
+        self.id = id
+        self.name = name
+
+class UI_Matrix_Connection:
+    def __init__(self, endpoint: 'UI_NMOS_Sender' | 'UI_NMOS_Receiver', channel: 'UI_NMOS_Channel' | None):
+        self.endpoint = endpoint
+        self.channel = channel
+        self.device = endpoint.device
+        self.node = endpoint.parent
+
 class UI_NMOS_Device:
     def __init__(self, device_id: str, parent: 'UI_NMOS_Node') -> None:
         self.device_id = device_id
         self.parent = parent
         self.senders: list['UI_NMOS_Sender'] = []
         self.receivers: list['UI_NMOS_Receiver'] = []
-        self.channels: list[dict] = []
+        self.channels: list[UI_NMOS_Channel] = []
 
 
 class UI_NMOS_Sender:
@@ -35,7 +53,7 @@ class UI_NMOS_Sender:
         self.device = device
         self.parent = device.parent  # Reference to node for convenience
         self.connected_receivers: list['UI_NMOS_Receiver'] = []
-        self.channels = [c for c in device.channels if c['type'] == 'output']
+        self.channels: list[UI_NMOS_Channel] = [c for c in device.channels if c.type == 'output']
 
 
 class UI_NMOS_Receiver:
@@ -44,7 +62,7 @@ class UI_NMOS_Receiver:
         self.device = device
         self.parent = device.parent  # Reference to node for convenience
         self.connected_senders: list[UI_NMOS_Sender] = []
-        self.channels = [c for c in device.channels if c['type'] == 'input']
+        self.channels: list[UI_NMOS_Channel] = [c for c in device.channels if c.type == 'input']
 
 
 class UI_NMOS_Node:
@@ -140,29 +158,29 @@ class LocalNMOS(toga.App):
             f"Local NMOS node discovery and routing matrix."
         )
 
-    def get_senders(self) -> List[tuple[UI_NMOS_Node, UI_NMOS_Sender, dict | None]]:
-        """Get all sender channels as (node, sender, channel) tuples for hierarchical display"""
+    def get_senders(self) -> List[UI_Matrix_Connection]:
+        """Get all sender channels as UI_Matrix_Connection objects for hierarchical display"""
         ret = []
         for n in self.model.get_nodes():
             for s in n.senders:
                 if s.channels:
                     for ch in s.channels:
-                        ret.append((n, s, ch))
+                        ret.append(UI_Matrix_Connection(s, ch))
                 else:
-                    ret.append((n, s, None))
+                    ret.append(UI_Matrix_Connection(s, None))
         return ret
 
 
-    def get_receivers(self) -> List[tuple[UI_NMOS_Node, UI_NMOS_Receiver, dict | None]]:
-        """Get all receivers as (node, receiver, channel) tuples for hierarchical display"""
+    def get_receivers(self) -> List[UI_Matrix_Connection]:
+        """Get all receivers as UI_Matrix_Connection objects for hierarchical display"""
         ret = []
         for n in self.model.get_nodes():
             for r in n.receivers:
                 if r.channels:
                     for ch in r.channels:
-                        ret.append((n, r, ch))
+                        ret.append(UI_Matrix_Connection(r, ch))
                 else:
-                    ret.append((n, r, None))
+                    ret.append(UI_Matrix_Connection(r, None))
         return ret
 
 
@@ -191,24 +209,24 @@ class LocalNMOS(toga.App):
              self.canvas.context.Stroke(line_width=2, color=rgb(100, 140, 200)) as stroke_dev, \
              self.canvas.context.Stroke(line_width=1, color=rgb(150, 180, 220)) as stroke_sender:
 
-            for i, (sender_node, sender, channel) in enumerate(senders):
+            for i, s_conn in enumerate(senders):
                 if i > 0:
-                    if sender_node != prev_sender_node:
+                    if s_conn.node != prev_sender_node:
                         x = self.margin_left + i * self.cell_width
                         stroke_node.move_to(x, self.margin_top)
                         stroke_node.line_to(x, self.margin_top + matrix_height)
-                    elif sender.device != prev_sender_device:
+                    elif s_conn.device != prev_sender_device:
                         x = self.margin_left + i * self.cell_width
                         stroke_dev.move_to(x, self.margin_top)
                         stroke_dev.line_to(x, self.margin_top + matrix_height)
-                    elif sender != prev_sender:
+                    elif s_conn.endpoint != prev_sender:
                         x = self.margin_left + i * self.cell_width
                         stroke_sender.move_to(x, self.margin_top)
                         stroke_sender.line_to(x, self.margin_top + matrix_height)
 
-                prev_sender_node = sender_node
-                prev_sender_device = sender.device
-                prev_sender = sender
+                prev_sender_node = s_conn.node
+                prev_sender_device = s_conn.device
+                prev_sender = s_conn.endpoint
 
         # Draw hierarchical separator lines for receivers (horizontal)
         prev_receiver_node = None
@@ -218,24 +236,24 @@ class LocalNMOS(toga.App):
              self.canvas.context.Stroke(line_width=2, color=rgb(200, 140, 100)) as stroke_dev, \
              self.canvas.context.Stroke(line_width=1, color=rgb(220, 180, 150)) as stroke_receiver:
 
-            for i, (receiver_node, receiver, channel) in enumerate(receivers):
+            for i, r_conn in enumerate(receivers):
                 if i > 0:
-                    if receiver_node != prev_receiver_node:
+                    if r_conn.node != prev_receiver_node:
                         y = self.margin_top + i * self.cell_height
                         stroke_node.move_to(self.margin_left, y)
                         stroke_node.line_to(self.margin_left + matrix_width, y)
-                    elif receiver.device != prev_receiver_device:
+                    elif r_conn.device != prev_receiver_device:
                         y = self.margin_top + i * self.cell_height
                         stroke_dev.move_to(self.margin_left, y)
                         stroke_dev.line_to(self.margin_left + matrix_width, y)
-                    elif receiver != prev_receiver:
+                    elif r_conn.endpoint != prev_receiver:
                         y = self.margin_top + i * self.cell_height
                         stroke_receiver.move_to(self.margin_left, y)
                         stroke_receiver.line_to(self.margin_left + matrix_width, y)
 
-                prev_receiver_node = receiver_node
-                prev_receiver_device = receiver.device
-                prev_receiver = receiver
+                prev_receiver_node = r_conn.node
+                prev_receiver_device = r_conn.device
+                prev_receiver = r_conn.endpoint
 
         # Draw border
         with self.canvas.context.Stroke(
@@ -246,9 +264,9 @@ class LocalNMOS(toga.App):
 
     def _draw_checkmarks_for_routing_connections(self, senders, receivers, matrix_width, matrix_height):
         # Draw routing connections (checkmarks)
-        for receiver_idx, (receiver_node, receiver, rx_channel) in enumerate(receivers):
-            for sender_idx, (sender_node, sender, tx_channel) in enumerate(senders):
-                if sender in receiver.connected_senders:
+        for receiver_idx, r_conn in enumerate(receivers):
+            for sender_idx, s_conn in enumerate(senders):
+                if s_conn.endpoint in r_conn.endpoint.connected_senders:
                     # Calculate cell center
                     x = self.margin_left + sender_idx * self.cell_width + self.cell_width / 2
                     y = self.margin_top + receiver_idx * self.cell_height + self.cell_height / 2
@@ -301,7 +319,7 @@ class LocalNMOS(toga.App):
         font_chan = toga.Font(family=SANS_SERIF, size=7)
 
         prev_sender = None
-        for i, (sender_node, sender, channel) in enumerate(senders):
+        for i, s_conn in enumerate(senders):
             x = self.margin_left + i * self.cell_width + self.cell_width / 2
             y = self.margin_top - 10
 
@@ -310,42 +328,42 @@ class LocalNMOS(toga.App):
             self.canvas.context.rotate(-0.785)  # Rotate -45 degrees
 
             # Draw labels only for the first channel of a sender to avoid clutter
-            if sender != prev_sender:
+            if s_conn.endpoint != prev_sender:
                 # Draw node name
-                node_label = sender_node.list_entry.get("title", f"Node {i}")[:10]
+                node_label = s_conn.node.list_entry.get("title", f"Node {i}")[:10]
                 with self.canvas.context.Fill(color=rgb(40, 80, 140)) as fill:
                     fill.write_text(node_label, 0, 0, font, Baseline.BOTTOM)
 
                 # Draw device and sender ID
-                device_label = f" >{sender.device.device_id[:6]}"
-                sender_label = f":{sender.sender_id[:6]}"
+                device_label = f" >{s_conn.device.device_id[:6]}"
+                sender_label = f":{s_conn.endpoint.sender_id[:6]}"
                 with self.canvas.context.Fill(color=rgb(100, 140, 200)) as fill:
                     fill.write_text(device_label, 0, 12, font_small, Baseline.BOTTOM)
                 with self.canvas.context.Fill(color=rgb(120, 160, 220)) as fill:
                     fill.write_text(sender_label, 0, 20, font_small, Baseline.BOTTOM)
 
             # Draw channel label
-            if channel:
-                channel_label = channel.get('name', channel.get('id', ''))[:8]
+            if s_conn.channel:
+                channel_label = s_conn.channel.name[:8]
                 with self.canvas.context.Fill(color=rgb(180, 200, 240)) as fill:
                     fill.write_text(channel_label, 0, 30, font_chan, Baseline.BOTTOM)
 
             # Undo transformations
             self.canvas.context.rotate(0.785)
             self.canvas.context.translate(-x, -y)
-            prev_sender = sender
+            prev_sender = s_conn.endpoint
 
         # Draw receiver labels (horizontal)
         receiver_label_start_x = receivers_label_x_offset + 35
         prev_receiver = None
-        for i, (receiver_node, receiver, channel) in enumerate(receivers):
+        for i, r_conn in enumerate(receivers):
             y = self.margin_top + i * self.cell_height + self.cell_height / 2
 
             # Draw labels only for the first channel of a receiver
-            if receiver != prev_receiver:
-                node_label = receiver_node.list_entry.get("title", f"Node {i}")[:12]
-                device_label = f" >{receiver.device.device_id[:6]}"
-                receiver_id_label = f":{receiver.receiver_id[:6]}"
+            if r_conn.endpoint != prev_receiver:
+                node_label = r_conn.node.list_entry.get("title", f"Node {i}")[:12]
+                device_label = f" >{r_conn.device.device_id[:6]}"
+                receiver_id_label = f":{r_conn.endpoint.receiver_id[:6]}"
 
                 with self.canvas.context.Fill(color=rgb(140, 80, 40)) as fill:
                     node_size = self.canvas.measure_text(node_label, font)
@@ -359,14 +377,14 @@ class LocalNMOS(toga.App):
                     fill.write_text(receiver_id_label, receiver_label_start_x + node_size[0] + device_size[0], y - 4, font_small, Baseline.MIDDLE)
 
             # Draw channel label
-            if channel:
-                channel_label = channel.get('name', channel.get('id', ''))[:8]
+            if r_conn.channel:
+                channel_label = r_conn.channel.name[:8]
                 with self.canvas.context.Fill(color=rgb(240, 200, 180)) as fill:
                     # Position channel label further to the right
                     channel_x = receiver_label_start_x + 100  # Adjust as needed
                     fill.write_text(channel_label, channel_x, y - 4, font_chan, Baseline.MIDDLE)
 
-            prev_receiver = receiver
+            prev_receiver = r_conn.endpoint
 
 
     def draw_routing_matrix(self):
@@ -383,8 +401,8 @@ class LocalNMOS(toga.App):
         nodes = list(self.model.node_map.values())
 
         # Use all nodes as both potential senders and receivers (hierarchical tuples)
-        senders = self.get_senders()  # List of (node, sender) tuples
-        receivers = self.get_receivers()  # List of (node, receiver) tuples
+        senders = self.get_senders()  # List of UI_Matrix_Connection
+        receivers = self.get_receivers()  # List of UI_Matrix_Connection
 
         matrix_width = len(senders) * self.cell_width
         matrix_height = len(receivers) * self.cell_height
@@ -564,10 +582,10 @@ class LocalNMOS(toga.App):
 
                         for d in dev.is08_input_channels:
                             for c in d.channels:
-                                ui_device.channels.append({"type": "input", "id": c.label, "name": c.label})
+                                ui_device.channels.append(UI_NMOS_Channel(type="input", id=c.id, name=c.label))
                         for d in dev.is08_output_channels:
                             for c in d.channels:
-                                ui_device.channels.append({"type": "output", "id": c.label, "name": c.label})
+                                ui_device.channels.append(UI_NMOS_Channel(type="output", id=c.id, name=c.label))
                         break
 
             ui_node.add_device(ui_device)
@@ -661,8 +679,11 @@ class LocalNMOS(toga.App):
         if receiver_idx < 0 or receiver_idx >= len(receivers):
             return
 
-        sender_node, sender, _ = senders[sender_idx]
-        receiver_node, receiver, _ = receivers[receiver_idx]
+        s_conn = senders[sender_idx]
+        r_conn = receivers[receiver_idx]
+
+        sender = s_conn.endpoint
+        receiver = r_conn.endpoint
 
         # Toggle the routing connection
         if sender in receiver.connected_senders:
@@ -674,7 +695,7 @@ class LocalNMOS(toga.App):
             # Connect
             receiver.connected_senders.append(sender)
             sender.connected_receivers.append(receiver)
-            print(f"Connected: {sender_node.list_entry.get('title', 'Node')} / {sender.device.device_id} / {sender.sender_id} -> {receiver_node.list_entry.get('title', 'Node')} / {receiver.device.device_id} / {receiver.receiver_id}")
+            print(f"Connected: {s_conn.node.list_entry.get('title', 'Node')} / {s_conn.device.device_id} / {sender.sender_id} -> {r_conn.node.list_entry.get('title', 'Node')} / {r_conn.device.device_id} / {receiver.receiver_id}")
             await self.connect_nodes(sender, receiver)
 
         # Redraw the matrix to show the change
