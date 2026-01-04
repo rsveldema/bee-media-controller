@@ -16,7 +16,7 @@ import socket
 from aiohttp import web
 from aiohttp.web_response import json_response
 
-from .nmos import NMOS_Device, NMOS_Node
+from .nmos import InputChannel, InputDevice, NMOS_Device, NMOS_Node, OutputChannel, OutputDevice
 
 try:
     from zeroconf import ServiceBrowser, ServiceListener, Zeroconf, ServiceInfo, InterfaceChoice
@@ -163,6 +163,7 @@ class NMOSRegistry:
     NMOS_CHANNELMAPPING_SERVICE = "_nmos-channelmapping._tcp.local."  # IS-08 Channel Mapping
     NMOS_SYSTEM_SERVICE = "_nmos-system._tcp.local."  # IS-09 System Parameters
 
+
     def __init__(
         self,
         node_added_callback: Optional[Callable] = None,
@@ -210,68 +211,188 @@ class NMOSRegistry:
         """Disconnect sender from receiver using IS-05 API"""
         pass
 
+    async def _fetch_is08_resources(
+        self,
+        resource_type: str,
+        node: NMOS_Node,
+        session: aiohttp.ClientSession,
+        sub_resources: List[str],
+        device_constructor: Callable[[str, Dict[str, Any]], Any],
+    ) -> List[Any]:
+        """Generic helper to fetch IS-08 resources like inputs or outputs."""
+
+        async def _fetch_details(resource_id: str) -> Optional[Dict[str, Any]]:
+            """Helper to fetch all details for one IS-08 resource concurrently."""
+            base_url = f"{node.channelmapping_url}/{resource_type}/{resource_id}"
+            try:
+                requests = {res.strip('/'): session.get(f"{base_url}{res.strip('/')}") for res in sub_resources}
+                responses = await asyncio.gather(*requests.values(), return_exceptions=True)
+
+                for res in sub_resources:
+                    logger.info(f"=====> trying to read: {base_url}{res.strip('/')}")
+
+                results: Dict[str, Any] = {}
+                for i, key in enumerate(requests.keys()):
+                    resp = responses[i]
+                    if isinstance(resp, Exception):
+                        logger.error(f"Error fetching {key} for {resource_type.rstrip('s')} {resource_id}: {resp}")
+                        return None
+                    if resp.status != 200:
+                        logger.error(f"Failed to fetch {key} for {resource_type.rstrip('s')} {resource_id}, status: {resp.status}")
+                        return None
+                    results[key] = await resp.json()
+                return results
+            except Exception as e:
+                logger.error(f"Error processing details for {resource_type.rstrip('s')} {resource_id}: {e}")
+                return None
+
+        resources_url = f"{node.channelmapping_url}/{resource_type}"
+        devices = []
+        try:
+            async with session.get(resources_url) as response:
+                if response.status != 200:
+                    logger.error(f"Failed to fetch {resource_type} list from {resources_url}: {response.status}")
+                    return []
+                resource_ids = await response.json()
+                if not isinstance(resource_ids, list):
+                    logger.error(f"Expected a list of {resource_type} IDs from {resources_url}, but got {type(resource_ids)}")
+                    return []
+
+            async def _details_and_construct(resource_id: str) -> Optional[Any]:
+                details = await _fetch_details(resource_id)
+                if details:
+                    try:
+                        return device_constructor(resource_id, details)
+                    except Exception as e:
+                        logger.error(f"Error constructing device for {resource_type.rstrip('s')} {resource_id}: {e}")
+                        traceback.print_exception(e)
+                return None
+
+            tasks = [_details_and_construct(rid) for rid in resource_ids]
+            results = await asyncio.gather(*tasks)
+
+            devices = [res for res in results if res is not None]
+            return devices
+
+        except Exception as e:
+            logger.error(f"Error fetching IS-08 {resource_type} for node {node.node_id}: {e}")
+            return []
+
+    async def fetch_device_is08_inputs(self, node: NMOS_Node, device: NMOS_Device, session: aiohttp.ClientSession) -> List[InputDevice]:
+        """Populates the input device list by calling the IS-08 endpoints."""
+
+        def constructor(input_id: str, details: Dict[str, Any]) -> InputDevice:
+            input_channels = [
+                InputChannel(id=ch.get("id", ""), label=ch.get("label", ""))
+                for ch in details.get("channels", [])
+            ]
+            return InputDevice(
+                id=input_id,
+                name=details.get("properties", {}).get("name", ""),
+                description=details.get("properties", {}).get("description", ""),
+                reordering=details.get("caps", {}).get("reordering", False),
+                block_size=details.get("caps", {}).get("block_size", 0),
+                parent_id=details.get("parent", {}).get("id", ""),
+                parent_type=details.get("parent", {}).get("type", ""),
+                channels=input_channels,
+            )
+
+        return await self._fetch_is08_resources(
+            "inputs",
+            node,
+            session,
+            ["/channels", "/properties", "/caps", "/parent"],
+            constructor,
+        )
+
+    async def fetch_device_is08_outputs(self, node: NMOS_Node, device: NMOS_Device, session: aiohttp.ClientSession) -> List[OutputDevice]:
+        """Populates the output device list by calling the IS-08 endpoints."""
+
+        def constructor(output_id: str, details: Dict[str, Any]) -> OutputDevice:
+            output_channels = [
+                OutputChannel(id=ch.get("id", ""), label=ch.get("label", ""), mapped_device=None, mapped_channel=None)
+                for ch in details.get("channels", [])
+            ]
+            logger.info(f"retrieved output device {details.get("properties", {}).get("name", "")}: {output_channels}")
+            return OutputDevice(
+                id=output_id,
+                name=details.get("properties", {}).get("name", ""),
+                description=details.get("properties", {}).get("description", ""),
+                source_id=details.get("sourceid", {}), # sourceid returns a plain string
+                routable_inputs=details.get("caps", {}).get("routable_inputs", []),
+                channels=output_channels,
+            )
+
+        return await self._fetch_is08_resources(
+            "outputs",
+            node,
+            session,
+            ["/channels", "/properties", "/caps", "/sourceid"],
+            constructor,
+        )
+
+
+    async def fetch_device_is08_mapping(self, node: NMOS_Node, device: NMOS_Device, session: aiohttp.ClientSession, inputs: List[InputDevice], outputs: List[OutputDevice]):
+        """
+       Calls the /map/active endpoint to retrieve the mapping from outputs to inputs.
+       Each item in the 'outputs' list is potentially mapped to an input device and channel index according to IS-08's channel mapping API.
+        """
+        mapping_url = f"{node.channelmapping_url}/map/active"
+        try:
+            async with session.get(mapping_url) as response:
+                if response.status != 200:
+                    logger.error(f"Failed to fetch channel mapping from {mapping_url}: {response.status}")
+                    return
+
+                active_map = await response.json()
+
+                # Create a lookup for input channels
+                input_channels_map: Dict[str, InputChannel] = {
+                    in_chan.id: in_chan
+                    for in_dev in inputs
+                    for in_chan in in_dev.channels
+                }
+
+                # Create a lookup for output channels
+                output_channels_map: Dict[str, OutputChannel] = {
+                    out_chan.id: out_chan
+                    for out_dev in outputs
+                    for out_chan in out_dev.channels
+                }
+
+                # Apply the mapping
+                for out_chan_id, mapping_info in active_map.items():
+                    input_id = mapping_info.get("input")
+                    if input_id and out_chan_id in output_channels_map:
+                        output_channel = output_channels_map[out_chan_id]
+                        if input_id in input_channels_map:
+                            input_channel = input_channels_map[input_id]
+                            output_channel.mapped_device = input_channel
+                            # mapped_channel is not available from this endpoint
+                            logger.debug(f"Mapped output {output_channel.label} to input {input_channel.label}")
+                        else:
+                            logger.warning(f"Mapped input channel {input_id} not found for output {out_chan_id}.")
+        except Exception as e:
+            logger.error(f"Error fetching or processing IS-08 mapping for device {device.device_id}: {e}")
+
+
     async def fetch_device_channels(self, node: NMOS_Node, device: NMOS_Device):
         """Fetch channel information for a device using IS-08 Channel Mapping API"""
         try:
-            # Query IS-08 API for channel mapping outputs (typical for devices with channels)
-            outputs_url = f"{node.channelmapping_url}/map/outputs"
-            inputs_url = f"{node.channelmapping_url}/map/inputs"
-            
-            channels = []
-            
-            logger.info(f"Fetching channels for device {device.device_id} from node {node.node_id}")
-            
+            logger.info(f"---------------------- Fetching channels for device {device.device_id} from node {node.node_id}")
+
             async with aiohttp.ClientSession() as session:
-                # Fetch output channels
-                try:
-                    async with session.get(outputs_url, timeout=aiohttp.ClientTimeout(total=5)) as response:
-                        match response.status:
-                            case 200:
-                                outputs_data = await response.json()
-                                for output in outputs_data:
-                                    # Filter channels for this specific device
-                                    if output.get('device_id') == device.device_id or 'device_id' not in output:
-                                        channels.append({
-                                            'type': 'output',
-                                            'id': output.get('id'),
-                                            'name': output.get('name', output.get('id')),
-                                            'channel_index': output.get('channel_index'),
-                                            'data': output
-                                        })
-                                logger.info(f"Fetched {len([c for c in channels if c['type'] == 'output'])} output channels for device {device.device_id}")
-                            case _:
-                                logger.error(f"Failed to fetch output channels from {outputs_url}, status: {response.status}")
-                except Exception as e:
-                    logger.error(f"Could not fetch output channels from {outputs_url}: {e}")
-                
-                # Fetch input channels
-                try:
-                    async with session.get(inputs_url, timeout=aiohttp.ClientTimeout(total=5)) as response:
-                        match response.status:
-                            case 200:
-                                inputs_data = await response.json()
-                                for input_ch in inputs_data:
-                                    # Filter channels for this specific device
-                                    if input_ch.get('device_id') == device.device_id or 'device_id' not in input_ch:
-                                        channels.append({
-                                            'type': 'input',
-                                            'id': input_ch.get('id'),
-                                            'name': input_ch.get('name', input_ch.get('id')),
-                                            'channel_index': input_ch.get('channel_index'),
-                                            'data': input_ch
-                                        })
-                                logger.info(f"Fetched {len([c for c in channels if c['type'] == 'input'])} input channels for device {device.device_id}")
-                            case _:
-                                logger.error(f"Failed to fetch input channels from {inputs_url}, status: {response.status}")
-                except Exception as e:
-                    logger.error(f"Could not fetch input channels from {inputs_url}: {e}")
-            
-            device.channels = channels
-            return channels
-            
+                inputs = await self.fetch_device_is08_inputs(node, device, session)
+                outputs = await self.fetch_device_is08_outputs(node, device, session)
+                await self.fetch_device_is08_mapping(node, device, session, inputs, outputs)
+
+                device.is08_input_channels = inputs
+                device.is08_output_channels = outputs
+
+            logger.debug(f"---------------------- Found channels: {inputs}, {outputs}")
+
         except Exception as e:
             logger.error(f"Error fetching channels for device {device.device_id}: {e}")
-            return []
 
     async def start(self):
         """Start the NMOS registry and begin discovering devices"""
@@ -478,7 +599,7 @@ class NMOSRegistry:
 
         # Try to get address from request
         client_host = request.remote
-        
+
         # Extract port from API endpoints in registration data
         # NMOS nodes typically provide their API endpoints in the 'api' field
         client_port = 80  # Default fallback
@@ -552,7 +673,7 @@ class NMOSRegistry:
         node = self.get_node_by_id(node_id)
         if node is None:
             return self.error_json_response({'status': 'bad node id'}, status=404)
-        
+
         # Check if device already exists in this node
         for existing_device in node.devices:
             if existing_device.device_id == device_id:
@@ -561,12 +682,12 @@ class NMOSRegistry:
 
         senders = []
         receivers = []
-        dev = NMOS_Device(node_id=node_id, device_id=device_id, senders=senders,receivers=receivers)
+        dev = NMOS_Device(node_id=node_id, device_id=device_id, senders=senders,receivers=receivers, is08_input_channels=[], is08_output_channels=[])
         node.devices.append(dev)
-        
+
         # Fetch channel information from IS-08 API
         asyncio.create_task(self.fetch_device_channels(node, dev))
-        
+
         # Notify UI about device addition
         if self.device_added_callback:
             try:
@@ -575,7 +696,7 @@ class NMOSRegistry:
                 )
             except RuntimeError:
                 self.device_added_callback(node_id, device_id)
-        
+
         return json_response({'status': 'registered'}, status=201)
 
     def find_device(self, device_id: str) -> NMOS_Device | None:
@@ -601,7 +722,7 @@ class NMOSRegistry:
         parent = self.find_device(sender_device_id)
         if parent is None:
             return self.error_json_response({'status': 'bad parent ID'}, status=400)
-        
+
         # Check if sender already exists in this device
         for existing_sender in parent.senders:
             if hasattr(existing_sender, 'device_id') and existing_sender.device_id == parent_device_id:
@@ -624,7 +745,7 @@ class NMOSRegistry:
                 logger.info("no subscriptions for sender yet")
         else:
             logger.info("no subscriptions for sender")
-        
+
         # Notify UI about sender addition
         if self.sender_added_callback:
             try:
@@ -652,7 +773,7 @@ class NMOSRegistry:
         parent = self.find_device(receiver_device_id)
         if parent is None:
             return self.error_json_response({'status': 'bad parent ID'}, status=400)
-        
+
         # Check if receiver already exists in this device
         for existing_receiver in parent.receivers:
             if hasattr(existing_receiver, 'device_id') and existing_receiver.device_id == parent_device_id:
@@ -669,11 +790,11 @@ class NMOSRegistry:
                 if sender is None:
                     # Create unknown node and device for unknown sender device
                     logger.warning(f"Unknown sender_id {sender_id} for receiver, creating unknown node and device")
-                    
+
                     # Create or get unknown node
                     unknown_node_id = f"unknown-node-{sender_id}"
                     unknown_node = self.get_node_by_id(unknown_node_id)
-                    
+
                     if unknown_node is None:
                         # Create new unknown node
                         client_host = request.remote
@@ -688,7 +809,7 @@ class NMOSRegistry:
                             devices=[]
                         )
                         self.nodes[unknown_node_id] = unknown_node
-                        
+
                         # Notify about new node
                         if self.node_added_callback:
                             try:
@@ -697,16 +818,18 @@ class NMOSRegistry:
                                 )
                             except RuntimeError:
                                 self.node_added_callback(unknown_node)
-                    
+
                     # Create the sender device and add to unknown node
                     sender = NMOS_Device(
                         node_id=unknown_node_id,
                         device_id=sender_id,
                         senders=[],
-                        receivers=[]
+                        receivers=[],
+                        is08_input_channels=[],
+                        is08_output_channels=[]
                     )
                     unknown_node.devices.append(sender)
-                    
+
                     # Notify UI about device addition
                     if self.device_added_callback:
                         try:
@@ -722,7 +845,7 @@ class NMOSRegistry:
                 logger.info("no subscriptions for receiver yet")
         else:
             logger.info("no subscriptions for receiver")
-        
+
         # Notify UI about receiver addition
         if self.receiver_added_callback:
             try:
@@ -731,7 +854,7 @@ class NMOSRegistry:
                 )
             except RuntimeError:
                 self.receiver_added_callback(parent.node_id, receiver_device_id, parent_device_id)
-        
+
         return json_response({'status': 'registered'}, status=201)
 
     def _handle_registration_source(self, request, resource_data: dict):
@@ -901,14 +1024,14 @@ class NMOSRegistry:
             await callback(device)
         else:
             callback(device)
-    
+
     async def _call_callback_with_params(self, callback: Callable, *args):
         """Helper to call callbacks with multiple parameters asynchronously"""
         if inspect.iscoroutinefunction(callback):
             await callback(*args)
         else:
             callback(*args)
-    
+
     async def _call_callback_with_params(self, callback: Callable, *args):
         """Helper to call callbacks with multiple parameters asynchronously"""
         if inspect.iscoroutinefunction(callback):
