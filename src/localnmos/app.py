@@ -572,10 +572,69 @@ class LocalNMOS(toga.App):
         """Handler for when a device is selected in the list"""
         if widget.selection:
             node_name = widget.selection.title
+            node_id = widget.selection.__dict__.get("id")
+            
+            # Build detailed information string
+            info_text = f"Node Name: {node_name}\n"
+            info_text += f"Connection: {widget.selection.subtitle}\n\n"
+            
+            # Get the UI node from the model
+            if node_id and node_id in self.model.node_map:
+                ui_node = self.model.node_map[node_id]
+                
+                # List devices
+                if ui_node.devices:
+                    info_text += f"Devices ({len(ui_node.devices)}):\n"
+                    for dev in ui_node.devices:
+                        info_text += f"  • {dev.device_id}\n"
+                    info_text += "\n"
+                
+                # List senders
+                if ui_node.senders:
+                    info_text += f"Senders ({len(ui_node.senders)}):\n"
+                    for sender in ui_node.senders:
+                        info_text += f"  • {sender.sender_id}\n"
+                        if sender.channels:
+                            for ch in sender.channels:
+                                info_text += f"    - {ch.name} (ID: {ch.id})\n"
+                    info_text += "\n"
+                
+                # List receivers
+                if ui_node.receivers:
+                    info_text += f"Receivers ({len(ui_node.receivers)}):\n"
+                    for receiver in ui_node.receivers:
+                        info_text += f"  • {receiver.receiver_id}\n"
+                        if receiver.channels:
+                            for ch in receiver.channels:
+                                info_text += f"    - {ch.name} (ID: {ch.id})\n"
+                    info_text += "\n"
+                
+                # Get channel information from the NMOS registry if available
+                if self.registry and node_id in self.registry.nodes:
+                    nmos_node = self.registry.nodes[node_id]
+                    
+                    # Show IS-08 channel mapping information
+                    for device in nmos_node.devices:
+                        if device.is08_input_channels:
+                            info_text += f"\nInput Channels for {device.device_id}:\n"
+                            for input_dev in device.is08_input_channels:
+                                info_text += f"  Input Device: {input_dev.name or input_dev.id}\n"
+                                for ch in input_dev.channels:
+                                    info_text += f"    • {ch.label} (ID: {ch.id or 'N/A'})\n"
+                        
+                        if device.is08_output_channels:
+                            info_text += f"\nOutput Channels for {device.device_id}:\n"
+                            for output_dev in device.is08_output_channels:
+                                info_text += f"  Output Device: {output_dev.name or output_dev.id}\n"
+                                for ch in output_dev.channels:
+                                    mapped_info = ""
+                                    if ch.mapped_device:
+                                        mapped_info = f" → {ch.mapped_device.label}"
+                                    info_text += f"    • {ch.label} (ID: {ch.id or 'N/A'}){mapped_info}\n"
+            
             self.main_window.info_dialog(
                 "NMOS Node Information",
-                f"Device Name: {node_name}\n\n"
-                f"Subtitle: {widget.selection.subtitle}"
+                info_text
             )
 
     def on_node_added(self, node: NMOS_Node):
@@ -940,8 +999,8 @@ class LocalNMOS(toga.App):
             await self.registry.disconnect_channel_mapping(
                 sender_node,
                 target_nmos_device,
-                target_output_dev.id,
-                target_output_chan.id
+                target_output_dev,
+                target_output_chan
             )
         else:
             # Connect: set the mapping to this input channel
@@ -990,12 +1049,12 @@ class LocalNMOS(toga.App):
             await self.registry.connect_channel_mapping(
                 sender_node,
                 target_nmos_device,
-                target_output_dev.id,
-                target_output_chan.id,
+                target_output_dev,
+                target_output_chan,
                 receiver_node,
                 target_recv_device,
-                target_input_dev.id,
-                target_input_chan.id
+                target_input_dev,
+                target_input_chan
             )
 
     async def connect_nodes(self, sender: UI_NMOS_Sender, receiver: UI_NMOS_Receiver):

@@ -216,25 +216,59 @@ class NMOSRegistry:
         pass
 
     async def connect_channel_mapping(self, sender_node: NMOS_Node, sender_device: NMOS_Device,
-                                     output_dev_id: str, output_chan_id: str,
+                                     output_dev: OutputDevice, output_chan: OutputChannel,
                                      receiver_node: NMOS_Node, receiver_device: NMOS_Device,
-                                     input_dev_id: str, input_chan_id: str):
+                                     input_dev: InputDevice, input_chan: InputChannel):
         """Connect an output channel to an input channel using IS-08 API"""
         try:
             # Build the IS-08 channel mapping API URL for activations
             activations_url = f"{sender_node.channelmapping_url}/map/activations"
             
+            # Find the input channel index within its device
+            input_channel_index = None
+            for idx, chan in enumerate(input_dev.channels):
+                if chan is input_chan or chan.id == input_chan.id or (not chan.id and chan.label == input_chan.label):
+                    input_channel_index = idx
+                    break
+            
+            if input_channel_index is None:
+                error_msg = f"Could not find channel index for input {input_chan.label} (ID: {input_chan.id}) in device {input_dev.id}"
+                logger.error(error_msg)
+                ErrorLog().add_error(error_msg)
+                return
+            
+            # Find the output channel key (ID or index as string)
+            # According to IS-08 spec, the key is the channel ID if present, otherwise use the channel index
+            output_chan_key = output_chan.id
+            if not output_chan_key:
+                # Find the output channel index
+                for idx, chan in enumerate(output_dev.channels):
+                    if chan is output_chan or (not chan.id and chan.label == output_chan.label):
+                        output_chan_key = str(idx)
+                        break
+                if not output_chan_key:
+                    error_msg = f"Could not determine output channel key for {output_chan.label}"
+                    logger.error(error_msg)
+                    ErrorLog().add_error(error_msg)
+                    return
+            
+            logger.info(f"Mapping output {output_dev.id}/{output_chan_key} (label: {output_chan.label}) to input {input_dev.id} channel index {input_channel_index} (label: {input_chan.label})")
+            
             # Prepare the activation request according to IS-08 spec
             # Use immediate activation with the output-to-input channel mapping
+            # Strip trailing slashes from device IDs
+            output_dev_id_clean = output_dev.id.rstrip('/')
+            input_dev_id_clean = input_dev.id.rstrip('/')
+            
             activation_data = {
                 "activation": {
                     "mode": "activate_immediate"
                 },
-                "action": {
-                    output_dev_id: {
-                        output_chan_id: {
-                            "input": input_dev_id,
-                            "channel_index": input_chan_id
+                "action:": { # note the extra ':' here is intentional as per IS-08 spec
+                    output_dev_id_clean: {
+                        output_chan_key: {
+                            "input": input_dev_id_clean,
+                            "channel_index": input_channel_index
                         }
                     }
                 }
@@ -244,7 +278,7 @@ class NMOSRegistry:
                 # POST request to /map/activations for immediate activation
                 async with session.post(activations_url, json=activation_data) as response:
                     if response.status in [200, 202]:
-                        logger.info(f"Successfully mapped output channel {output_chan_id} to input channel {input_chan_id}")
+                        logger.info(f"Successfully mapped output channel {output_chan.label} to input channel {input_chan.label}")
                         # Refresh the channel data
                         await self.fetch_device_channels(sender_node, sender_device)
                     else:
@@ -258,16 +292,30 @@ class NMOSRegistry:
             ErrorLog().add_error(error_msg, exception=e, traceback_str=traceback.format_exc())
 
     async def disconnect_channel_mapping(self, sender_node: NMOS_Node, sender_device: NMOS_Device,
-                                        output_dev_id: str, output_chan_id: str):
+                                        output_dev: OutputDevice, output_chan: OutputChannel):
         """Disconnect an output channel mapping using IS-08 API"""
         try:
             # Build the IS-08 channel mapping API URL
             map_url = f"{sender_node.channelmapping_url}/map/active"
             
+            # Find the output channel key (ID or index as string)
+            output_chan_key = output_chan.id
+            if not output_chan_key:
+                # Find the output channel index
+                for idx, chan in enumerate(output_dev.channels):
+                    if chan is output_chan or (not chan.id and chan.label == output_chan.label):
+                        output_chan_key = str(idx)
+                        break
+                if not output_chan_key:
+                    error_msg = f"Could not determine output channel key for {output_chan.label}"
+                    logger.error(error_msg)
+                    ErrorLog().add_error(error_msg)
+                    return
+            
             # Prepare the mapping data to clear the mapping
             # Setting input to null or empty string clears the mapping
             mapping_data = {
-                output_chan_id: {
+                output_chan_key: {
                     "input": None,
                     "channel_index": None
                 }
@@ -277,7 +325,7 @@ class NMOSRegistry:
                 # PATCH request to clear the active mapping
                 async with session.patch(map_url, json=mapping_data) as response:
                     if response.status in [200, 202]:
-                        logger.info(f"Successfully cleared mapping for output channel {output_chan_id}")
+                        logger.info(f"Successfully cleared mapping for output channel {output_chan.label}")
                         # Refresh the channel data
                         await self.fetch_device_channels(sender_node, sender_device)
                     else:
@@ -292,7 +340,7 @@ class NMOSRegistry:
 
     async def _fetch_is08_resources(
         self,
-        resource_type: str,
+        resource_type: str, # inputs or outputs
         node: NMOS_Node,
         session: aiohttp.ClientSession,
         sub_resources: List[str],
