@@ -277,25 +277,42 @@ class LocalNMOS(toga.App):
                         for nmos_device in sender_node.devices:
                             if nmos_device.device_id != s_conn.device.device_id:
                                 continue
+                            
+                            # Debug: print what we're looking for
+                            print(f"Looking for output channel: {s_conn.channel.name} (ID: {s_conn.channel.id})")
                                 
                             # Find the specific output channel in the NMOS device
                             for output_dev in nmos_device.is08_output_channels:
+                                print(f"  Checking output device: {output_dev.id} with {len(output_dev.channels)} channels")
                                 for output_chan in output_dev.channels:
-                                    # Prefer exact ID match if both have IDs
+                                    # Prefer exact ID match if both have IDs (handle trailing slashes)
                                     output_match = False
                                     if s_conn.channel.id and output_chan.id:
-                                        output_match = (output_chan.id == s_conn.channel.id)
+                                        output_match = (output_chan.id.rstrip('/') == s_conn.channel.id.rstrip('/'))
+                                        print(f"    Channel {output_chan.label} (ID: {output_chan.id}) - ID match: {output_match}")
                                     elif output_chan.label == s_conn.channel.name:
                                         output_match = True
+                                        print(f"    Channel {output_chan.label} - Label match: {output_match}")
                                     
                                     if output_match:
+                                        print(f"    ✓ Found matching output channel: {output_chan.label}")
                                         # Check if this specific output is mapped to the specific input channel
                                         if output_chan.mapped_device:
-                                            # Prefer exact ID match if both have IDs
+                                            print(f"      Mapped to: {output_chan.mapped_device.label} (ID: {output_chan.mapped_device.id})")
+                                            print(f"      Looking for input: {r_conn.channel.name} (ID: {r_conn.channel.id})")
+                                            # Prefer exact ID match if both have IDs (handle trailing slashes)
                                             if r_conn.channel.id and output_chan.mapped_device.id:
-                                                is_connected = (output_chan.mapped_device.id == r_conn.channel.id)
+                                                is_connected = (output_chan.mapped_device.id.rstrip('/') == r_conn.channel.id.rstrip('/'))
+                                                print(f"      ID comparison: '{output_chan.mapped_device.id.rstrip('/')}' == '{r_conn.channel.id.rstrip('/')}' -> {is_connected}")
                                             elif output_chan.mapped_device.label == r_conn.channel.name:
                                                 is_connected = True
+                                                print(f"      Label comparison matched: {is_connected}")
+                                            
+                                            # Debug logging
+                                            if is_connected:
+                                                print(f"✓✓✓ CHECKMARK SHOULD APPEAR: {output_chan.label} -> {output_chan.mapped_device.label}")
+                                        else:
+                                            print(f"      ✗ No mapped_device set")
                                         break
                                 if is_connected:
                                     break

@@ -295,8 +295,8 @@ class NMOSRegistry:
                                         output_dev: OutputDevice, output_chan: OutputChannel):
         """Disconnect an output channel mapping using IS-08 API"""
         try:
-            # Build the IS-08 channel mapping API URL
-            map_url = f"{sender_node.channelmapping_url}/map/active"
+            # Build the IS-08 channel mapping API URL for activations
+            activations_url = f"{sender_node.channelmapping_url}/map/activations"
             
             # Find the output channel key (ID or index as string)
             output_chan_key = output_chan.id
@@ -312,18 +312,28 @@ class NMOSRegistry:
                     ErrorLog().add_error(error_msg)
                     return
             
-            # Prepare the mapping data to clear the mapping
-            # Setting input to null or empty string clears the mapping
-            mapping_data = {
-                output_chan_key: {
-                    "input": None,
-                    "channel_index": None
+            # Strip trailing slashes from device IDs
+            output_dev_id_clean = output_dev.id.rstrip('/')
+            
+            # Prepare the activation request to clear the mapping
+            # Setting input to null clears the mapping
+            activation_data = {
+                "activation": {
+                    "mode": "activate_immediate"
+                },
+                "action:": {  # note the extra ':' here is intentional as per IS-08 spec
+                    output_dev_id_clean: {
+                        output_chan_key: {
+                            "input": None,
+                            "channel_index": None
+                        }
+                    }
                 }
             }
             
             async with aiohttp.ClientSession() as session:
-                # PATCH request to clear the active mapping
-                async with session.patch(map_url, json=mapping_data) as response:
+                # POST request to /map/activations for immediate activation
+                async with session.post(activations_url, json=activation_data) as response:
                     if response.status in [200, 202]:
                         logger.info(f"Successfully cleared mapping for output channel {output_chan.label}")
                         # Refresh the channel data
@@ -487,34 +497,84 @@ class NMOSRegistry:
                     ErrorLog().add_error(error_msg)
                     return
 
-                active_map = await response.json()
+                response_data = await response.json()
+                
+                logger.info(f"Active mapping response: {response_data}")
 
-                # Create a lookup for input channels
-                input_channels_map: Dict[str, InputChannel] = {
-                    in_chan.id: in_chan
-                    for in_dev in inputs
-                    for in_chan in in_dev.channels
-                }
+                # Extract the actual map from the response (it's nested under "map" key)
+                active_map = response_data.get("map", {})
+                
+                if not active_map:
+                    logger.warning(f"No 'map' key found in response: {response_data}")
+                    return
 
-                # Create a lookup for output channels
-                output_channels_map: Dict[str, OutputChannel] = {
-                    out_chan.id: out_chan
-                    for out_dev in outputs
-                    for out_chan in out_dev.channels
-                }
+                # Create lookup for input devices by ID
+                input_devices_map: Dict[str, InputDevice] = {}
+                for in_dev in inputs:
+                    input_devices_map[in_dev.id] = in_dev
+                    input_devices_map[in_dev.id.rstrip('/')] = in_dev
+
+                # Create lookup for output devices by ID
+                output_devices_map: Dict[str, OutputDevice] = {}
+                for out_dev in outputs:
+                    output_devices_map[out_dev.id] = out_dev
+                    output_devices_map[out_dev.id.rstrip('/')] = out_dev
 
                 # Apply the mapping
-                for out_chan_id, mapping_info in active_map.items():
-                    input_id = mapping_info.get("input")
-                    if input_id and out_chan_id in output_channels_map:
-                        output_channel = output_channels_map[out_chan_id]
-                        if input_id in input_channels_map:
-                            input_channel = input_channels_map[input_id]
-                            output_channel.mapped_device = input_channel
-                            # mapped_channel is not available from this endpoint
-                            logger.debug(f"Mapped output {output_channel.label} to input {input_channel.label}")
+                # Structure: map -> output_device_id -> channel_id -> {input: input_device_id, channel_index: int}
+                for output_dev_id, channels_map in active_map.items():
+                    logger.info(f"Processing output device '{output_dev_id}' with channels: {list(channels_map.keys())}")
+                    
+                    # Find the output device
+                    output_device = output_devices_map.get(output_dev_id) or output_devices_map.get(output_dev_id.rstrip('/'))
+                    if not output_device:
+                        logger.warning(f"Output device '{output_dev_id}' not found. Available: {list(output_devices_map.keys())}")
+                        continue
+                    
+                    # Process each channel in this output device
+                    for channel_id, mapping_info in channels_map.items():
+                        input_dev_id = mapping_info.get("input")
+                        channel_index = mapping_info.get("channel_index")
+                        
+                        logger.info(f"  Channel '{channel_id}': input_dev='{input_dev_id}', channel_index={channel_index}")
+                        
+                        # Find the output channel in this device
+                        output_channel = None
+                        for idx, out_chan in enumerate(output_device.channels):
+                            # Match by ID or by index (channel_id might be a string index like "0", "1")
+                            if out_chan.id == channel_id or out_chan.id.rstrip('/') == channel_id:
+                                output_channel = out_chan
+                                logger.debug(f"  Matched channel by ID: {out_chan.label}")
+                                break
+                            # If channel has no ID, match by numeric index
+                            if not out_chan.id and str(idx) == channel_id:
+                                output_channel = out_chan
+                                logger.debug(f"  Matched channel by index {idx}: {out_chan.label}")
+                                break
+                        
+                        if not output_channel:
+                            logger.warning(f"  Output channel '{channel_id}' not found in device {output_device.name}")
+                            continue
+                        
+                        # If there's a mapping, find the input device and channel
+                        if input_dev_id:
+                            input_device = input_devices_map.get(input_dev_id) or input_devices_map.get(input_dev_id.rstrip('/'))
+                            
+                            if input_device and channel_index is not None:
+                                # Get the input channel by index
+                                if 0 <= channel_index < len(input_device.channels):
+                                    input_channel = input_device.channels[channel_index]
+                                    output_channel.mapped_device = input_channel
+                                    logger.info(f"  ✓✓✓ Mapped {output_device.name}/{output_channel.label} -> {input_device.name}/{input_channel.label}")
+                                else:
+                                    logger.warning(f"  Channel index {channel_index} out of range for input device {input_device.name} (has {len(input_device.channels)} channels)")
+                            else:
+                                if not input_device:
+                                    logger.warning(f"  Input device '{input_dev_id}' not found. Available: {list(input_devices_map.keys())}")
+                                else:
+                                    logger.warning(f"  No channel_index specified for mapping")
                         else:
-                            logger.warning(f"Mapped input channel {input_id} not found for output {out_chan_id}.")
+                            logger.debug(f"  No input mapping for {output_device.name}/{output_channel.label}")
         except Exception as e:
             error_msg = f"Error fetching or processing IS-08 mapping for device {device.device_id}: {e}"
             logger.error(error_msg)
