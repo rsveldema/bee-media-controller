@@ -17,6 +17,7 @@ from aiohttp import web
 from aiohttp.web_response import json_response
 
 from .nmos import InputChannel, InputDevice, NMOS_Device, NMOS_Node, OutputChannel, OutputDevice
+from .error_log import ErrorLog
 
 try:
     from zeroconf import ServiceBrowser, ServiceListener, Zeroconf, ServiceInfo, InterfaceChoice
@@ -248,9 +249,13 @@ class NMOSRegistry:
                         await self.fetch_device_channels(sender_node, sender_device)
                     else:
                         error_text = await response.text()
-                        logger.error(f"Failed to set channel mapping: {response.status} - {error_text}: tried to post: {activation_data}")
+                        error_msg = f"Failed to set channel mapping: {response.status} - {error_text}: tried to post: {activation_data}"
+                        logger.error(error_msg)
+                        ErrorLog().add_error(error_msg)
         except Exception as e:
-            logger.error(f"Error connecting channel mapping: {e}")
+            error_msg = f"Error connecting channel mapping: {e}"
+            logger.error(error_msg)
+            ErrorLog().add_error(error_msg, exception=e, traceback_str=traceback.format_exc())
 
     async def disconnect_channel_mapping(self, sender_node: NMOS_Node, sender_device: NMOS_Device,
                                         output_dev_id: str, output_chan_id: str):
@@ -277,9 +282,13 @@ class NMOSRegistry:
                         await self.fetch_device_channels(sender_node, sender_device)
                     else:
                         error_text = await response.text()
-                        logger.error(f"Failed to clear channel mapping: {response.status} - {error_text}")
+                        error_msg = f"Failed to clear channel mapping: {response.status} - {error_text}"
+                        logger.error(error_msg)
+                        ErrorLog().add_error(error_msg)
         except Exception as e:
-            logger.error(f"Error disconnecting channel mapping: {e}")
+            error_msg = f"Error disconnecting channel mapping: {e}"
+            logger.error(error_msg)
+            ErrorLog().add_error(error_msg, exception=e, traceback_str=traceback.format_exc())
 
     async def _fetch_is08_resources(
         self,
@@ -305,15 +314,21 @@ class NMOSRegistry:
                 for i, key in enumerate(requests.keys()):
                     resp = responses[i]
                     if isinstance(resp, Exception):
-                        logger.error(f"Error fetching {key} for {resource_type.rstrip('s')} {resource_id}: {resp}")
+                        error_msg = f"Error fetching {key} for {resource_type.rstrip('s')} {resource_id}: {resp}"
+                        logger.error(error_msg)
+                        ErrorLog().add_error(error_msg, exception=resp if isinstance(resp, Exception) else None)
                         return None
                     if resp.status != 200:
-                        logger.error(f"Failed to fetch {key} for {resource_type.rstrip('s')} {resource_id}, status: {resp.status}")
+                        error_msg = f"Failed to fetch {key} for {resource_type.rstrip('s')} {resource_id}, status: {resp.status}"
+                        logger.error(error_msg)
+                        ErrorLog().add_error(error_msg)
                         return None
                     results[key] = await resp.json()
                 return results
             except Exception as e:
-                logger.error(f"Error processing details for {resource_type.rstrip('s')} {resource_id}: {e}")
+                error_msg = f"Error processing details for {resource_type.rstrip('s')} {resource_id}: {e}"
+                logger.error(error_msg)
+                ErrorLog().add_error(error_msg, exception=e, traceback_str=traceback.format_exc())
                 return None
 
         resources_url = f"{node.channelmapping_url}/{resource_type}"
@@ -321,11 +336,15 @@ class NMOSRegistry:
         try:
             async with session.get(resources_url) as response:
                 if response.status != 200:
-                    logger.error(f"Failed to fetch {resource_type} list from {resources_url}: {response.status}")
+                    error_msg = f"Failed to fetch {resource_type} list from {resources_url}: {response.status}"
+                    logger.error(error_msg)
+                    ErrorLog().add_error(error_msg)
                     return []
                 resource_ids = await response.json()
                 if not isinstance(resource_ids, list):
-                    logger.error(f"Expected a list of {resource_type} IDs from {resources_url}, but got {type(resource_ids)}")
+                    error_msg = f"Expected a list of {resource_type} IDs from {resources_url}, but got {type(resource_ids)}"
+                    logger.error(error_msg)
+                    ErrorLog().add_error(error_msg)
                     return []
 
             async def _details_and_construct(resource_id: str) -> Optional[Any]:
@@ -334,7 +353,9 @@ class NMOSRegistry:
                     try:
                         return device_constructor(resource_id, details)
                     except Exception as e:
-                        logger.error(f"Error constructing device for {resource_type.rstrip('s')} {resource_id}: {e}")
+                        error_msg = f"Error constructing device for {resource_type.rstrip('s')} {resource_id}: {e}"
+                        logger.error(error_msg)
+                        ErrorLog().add_error(error_msg, exception=e, traceback_str=traceback.format_exc())
                         traceback.print_exception(e)
                 return None
 
@@ -345,7 +366,9 @@ class NMOSRegistry:
             return devices
 
         except Exception as e:
-            logger.error(f"Error fetching IS-08 {resource_type} for node {node.node_id}: {e}")
+            error_msg = f"Error fetching IS-08 {resource_type} for node {node.node_id}: {e}"
+            logger.error(error_msg)
+            ErrorLog().add_error(error_msg, exception=e, traceback_str=traceback.format_exc())
             return []
 
     async def fetch_device_is08_inputs(self, node: NMOS_Node, device: NMOS_Device, session: aiohttp.ClientSession) -> List[InputDevice]:
@@ -411,7 +434,9 @@ class NMOSRegistry:
         try:
             async with session.get(mapping_url) as response:
                 if response.status != 200:
-                    logger.error(f"Failed to fetch channel mapping from {mapping_url}: {response.status}")
+                    error_msg = f"Failed to fetch channel mapping from {mapping_url}: {response.status}"
+                    logger.error(error_msg)
+                    ErrorLog().add_error(error_msg)
                     return
 
                 active_map = await response.json()
@@ -443,7 +468,9 @@ class NMOSRegistry:
                         else:
                             logger.warning(f"Mapped input channel {input_id} not found for output {out_chan_id}.")
         except Exception as e:
-            logger.error(f"Error fetching or processing IS-08 mapping for device {device.device_id}: {e}")
+            error_msg = f"Error fetching or processing IS-08 mapping for device {device.device_id}: {e}"
+            logger.error(error_msg)
+            ErrorLog().add_error(error_msg, exception=e, traceback_str=traceback.format_exc())
 
 
     async def fetch_device_channels(self, node: NMOS_Node, device: NMOS_Device):
@@ -471,7 +498,9 @@ class NMOSRegistry:
                     self.channel_updated_callback(node.node_id, device.device_id)
 
         except Exception as e:
-            logger.error(f"Error fetching channels for device {device.device_id}: {e}")
+            error_msg = f"Error fetching channels for device {device.device_id}: {e}"
+            logger.error(error_msg)
+            ErrorLog().add_error(error_msg, exception=e, traceback_str=traceback.format_exc())
 
     async def start(self):
         """Start the NMOS registry and begin discovering devices"""
@@ -480,9 +509,9 @@ class NMOSRegistry:
             return
 
         if Zeroconf is None:
-            logger.error(
-                "zeroconf library not available. Install with: pip install zeroconf"
-            )
+            error_msg = "zeroconf library not available. Install with: pip install zeroconf"
+            logger.error(error_msg)
+            ErrorLog().add_error(error_msg)
             return
 
         logger.info("Starting NMOS registry with MDNS discovery")
@@ -532,7 +561,9 @@ class NMOSRegistry:
             self.announcement_task = asyncio.create_task(self._announce_service_periodically())
             logger.info("Periodic service announcements started")
         except Exception as e:
-            logger.error(f"Failed to start registration service (non-fatal): {e}")
+            error_msg = f"Failed to start registration service (non-fatal): {e}"
+            logger.error(error_msg)
+            ErrorLog().add_error(error_msg, exception=e, traceback_str=traceback.format_exc())
 
     async def stop(self):
         """Stop the NMOS registry and cleanup resources"""
@@ -614,7 +645,9 @@ class NMOSRegistry:
                 f"Hosting NMOS registration service: {service_name} at {local_ip}:{port} via mDNs for {service_type} "
             )
         except Exception as e:
-            logger.error(f"Failed to register NMOS service: {e}")
+            error_msg = f"Failed to register NMOS service: {e}"
+            logger.error(error_msg)
+            ErrorLog().add_error(error_msg, exception=e, traceback_str=traceback.format_exc())
             traceback.print_exception(e)
             sys.exit(1)
 
@@ -626,7 +659,9 @@ class NMOSRegistry:
                 logger.info("Unregistered NMOS registration service")
                 self.service_info = None
             except Exception as e:
-                logger.error(f"Failed to unregister service: {e}")
+                error_msg = f"Failed to unregister service: {e}"
+                logger.error(error_msg)
+                ErrorLog().add_error(error_msg, exception=e, traceback_str=traceback.format_exc())
 
     async def _start_registration_server(self):
         """Start HTTP server to accept device registrations"""
@@ -644,7 +679,9 @@ class NMOSRegistry:
 
             logger.info(f"Registration HTTP server started on port {self.registration_port}")
         except Exception as e:
-            logger.error(f"Failed to start registration server: {e}")
+            error_msg = f"Failed to start registration server: {e}"
+            logger.error(error_msg)
+            ErrorLog().add_error(error_msg, exception=e, traceback_str=traceback.format_exc())
 
     async def _stop_registration_server(self):
         """Stop the HTTP registration server"""
@@ -654,7 +691,9 @@ class NMOSRegistry:
                 logger.info("Registration HTTP server stopped")
                 self.registration_runner = None
             except Exception as e:
-                logger.error(f"Failed to stop registration server: {e}")
+                error_msg = f"Failed to stop registration server: {e}"
+                logger.error(error_msg)
+                ErrorLog().add_error(error_msg, exception=e, traceback_str=traceback.format_exc())
 
     async def _handle_health(self, request):
         """ handle health update """
@@ -668,7 +707,9 @@ class NMOSRegistry:
             return self.error_json_response({'error': str(e)}, status=400)
 
     def error_json_response(self, err, status):
-        logger.error(f"return error: {err} with status {status}")
+        error_msg = f"return error: {err} with status {status}"
+        logger.error(error_msg)
+        ErrorLog().add_error(error_msg)
         return json_response(err, status = status)
 
     def _handle_registration_node(self, request, resource_data: dict, api_version: str):
@@ -971,11 +1012,15 @@ class NMOSRegistry:
                 case 'source':
                     return self._handle_registration_source(request, resource_data)
                 case _:
-                    logger.error(f"unknown resource type: {resource_type}")
+                    error_msg = f"unknown resource type: {resource_type}"
+                    logger.error(error_msg)
+                    ErrorLog().add_error(error_msg)
                     return self._handle_registration_unknown(request, resource_data)
 
         except Exception as e:
-            logger.error(f"Error handling registration: {e}")
+            error_msg = f"Error handling registration: {e}"
+            logger.error(error_msg)
+            ErrorLog().add_error(error_msg, exception=e, traceback_str=traceback.format_exc())
             return self.error_json_response({'error': str(e)}, status=400)
 
     async def _handle_deregistration(self, request):
@@ -999,7 +1044,9 @@ class NMOSRegistry:
             return json_response({'status': 'deregistered'}, status=204)
 
         except Exception as e:
-            logger.error(f"Error handling deregistration: {e}")
+            error_msg = f"Error handling deregistration: {e}"
+            logger.error(error_msg)
+            ErrorLog().add_error(error_msg, exception=e, traceback_str=traceback.format_exc())
             return json_response({'error': str(e)}, status=400)
 
     async def _announce_service_periodically(self):
@@ -1020,7 +1067,9 @@ class NMOSRegistry:
                 logger.info("Periodic service announcements cancelled")
                 break
             except Exception as e:
-                logger.error(f"Error announcing service: {e}")
+                error_msg = f"Error announcing service: {e}"
+                logger.error(error_msg)
+                ErrorLog().add_error(error_msg, exception=e, traceback_str=traceback.format_exc())
                 await asyncio.sleep(60)
 
     async def _monitor_heartbeats(self):
@@ -1060,7 +1109,9 @@ class NMOSRegistry:
                 logger.info("Heartbeat monitoring cancelled")
                 break
             except Exception as e:
-                logger.error(f"Error in heartbeat monitoring: {e}")
+                error_msg = f"Error in heartbeat monitoring: {e}"
+                logger.error(error_msg)
+                ErrorLog().add_error(error_msg, exception=e, traceback_str=traceback.format_exc())
                 await asyncio.sleep(5)
 
     def _on_node_added(self, node: NMOS_Node):

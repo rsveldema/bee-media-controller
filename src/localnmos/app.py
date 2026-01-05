@@ -17,6 +17,7 @@ from toga.sources import ListSource
 
 from .registry import NMOSRegistry
 from .nmos import NMOS_Node
+from .error_log import ErrorLog
 
 # Build date - automatically set when the module is imported
 BUILD_DATE = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -460,6 +461,50 @@ class LocalNMOS(toga.App):
         """Handler for the Refresh Routing Matrix menu command"""
         print("Refreshing routing matrix...")
         self.draw_routing_matrix()
+        self.update_error_status()
+
+    def show_error_log_command(self, widget):
+        """Handler for the Show Error Log menu command"""
+        error_log = ErrorLog()
+        errors = error_log.get_all_errors()
+        
+        if not errors:
+            self.main_window.info_dialog(
+                "Error Log",
+                "No errors have been logged."
+            )
+            return
+        
+        # Format all errors for display
+        error_text = f"Total Errors: {len(errors)}\n\n"
+        for i, error in enumerate(errors[-50:], 1):  # Show last 50 errors
+            error_text += f"{i}. {error}\n"
+        
+        # Show in a scrollable dialog (using info_dialog as a simple option)
+        self.main_window.info_dialog(
+            f"Error Log ({len(errors)} errors)",
+            error_text
+        )
+
+    def update_error_status(self):
+        """Update the error status label with the last error"""
+        if not hasattr(self, 'error_status_label'):
+            return
+            
+        error_log = ErrorLog()
+        last_error = error_log.get_last_error()
+        
+        if last_error:
+            error_count = error_log.get_error_count()
+            # Truncate error message to fit in status bar
+            error_msg = str(last_error)
+            if len(error_msg) > 60:
+                error_msg = error_msg[:57] + "..."
+            self.error_status_label.text = f"⚠ {error_count} error(s): {error_msg}"
+            self.error_status_label.style.color = rgb(200, 50, 50)
+        else:
+            self.error_status_label.text = "No errors"
+            self.error_status_label.style.color = rgb(100, 100, 100)
 
     def startup(self):
         """Construct and show the Toga application."""
@@ -480,6 +525,14 @@ class LocalNMOS(toga.App):
         )
         self.commands.add(refresh_command)
 
+        error_log_command = toga.Command(
+            self.show_error_log_command,
+            text="Show Error Log",
+            tooltip="Show all errors from the registry",
+            group=toga.Group.VIEW
+        )
+        self.commands.add(error_log_command)
+
         main_box = toga.Box(direction=ROW)
 
         nodes_box = toga.Box(direction=COLUMN, style=Pack(width=300))
@@ -490,6 +543,13 @@ class LocalNMOS(toga.App):
         )
         nodes_box.add(toga.Label("NMOS Nodes (MDNS Discovery)"))
         nodes_box.add(self.listbox)
+
+        # Add error status label
+        self.error_status_label = toga.Label(
+            "No errors",
+            style=Pack(padding=5, font_size=9, color=rgb(100, 100, 100))
+        )
+        nodes_box.add(self.error_status_label)
 
         self.canvas = toga.Canvas(
             flex=1, on_resize=self.on_resize, on_press=self.on_press
@@ -505,6 +565,7 @@ class LocalNMOS(toga.App):
         self.main_window.content = main_box
         self.main_window.show()
 
+        self.update_error_status()
         self.loop.call_soon_threadsafe(self.sync_task, "Hi")
 
     def on_node_select(self, widget):
@@ -548,6 +609,7 @@ class LocalNMOS(toga.App):
 
         self.listbox.refresh()
         self.draw_routing_matrix()
+        self.update_error_status()
 
     def add_sender_to_device(self, node_id: str, device_id: str, sender_id: str):
         """Add a sender to a device on a node"""
@@ -706,6 +768,14 @@ class LocalNMOS(toga.App):
 
     async def async_task(self, arg):
         print(f"running async task: {arg}")
+        
+        # Periodically update error status
+        while True:
+            await asyncio.sleep(2)  # Update every 2 seconds
+            try:
+                self.loop.call_soon_threadsafe(self.update_error_status)
+            except:
+                pass  # Ignore errors if app is closing
 
     async def on_running(self):
         print(f"on_running")
