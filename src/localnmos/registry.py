@@ -152,6 +152,9 @@ class NMOSRegistry:
     Supports IS-04 (Discovery and Registration) and IS-05 (Device Connection Management).
     """
 
+    # Debug flag - check if --debug-registry is in command line arguments
+    debug_registry = '--debug-registry' in sys.argv
+
     # NMOS service types for mDNS discovery
     NMOS_NODE_SERVICE = "_nmos-node._tcp.local."
     NMOS_REGISTRATION_SERVICE = "_nmos-registration._tcp.local."
@@ -433,10 +436,12 @@ class NMOSRegistry:
         """Populates the input device list by calling the IS-08 endpoints."""
 
         def constructor(input_id: str, details: Dict[str, Any]) -> InputDevice:
+            logger.info(f"Input {input_id} channels data: {details.get('channels', [])}")
             input_channels = [
                 InputChannel(id=ch.get("id", ""), label=ch.get("label", ""))
                 for ch in details.get("channels", [])
             ]
+            logger.info(f"retrieved input device {details.get('properties', {}).get('name', '')}: {input_channels}")
             return InputDevice(
                 id=input_id,
                 name=details.get("properties", {}).get("name", ""),
@@ -460,6 +465,7 @@ class NMOSRegistry:
         """Populates the output device list by calling the IS-08 endpoints."""
 
         def constructor(output_id: str, details: Dict[str, Any]) -> OutputDevice:
+            logger.info(f"Output {output_id} channels data: {details.get('channels', [])}")
             output_channels = [
                 OutputChannel(id=ch.get("id", ""), label=ch.get("label", ""), mapped_device=None, mapped_channel=None)
                 for ch in details.get("channels", [])
@@ -910,7 +916,7 @@ class NMOSRegistry:
 
         senders = []
         receivers = []
-        dev = NMOS_Device(node_id=node_id, device_id=device_id, senders=senders,receivers=receivers, is08_input_channels=[], is08_output_channels=[])
+        dev = NMOS_Device(node_id=node_id, device_id=device_id, senders=senders, receivers=receivers, is08_input_channels=[], is08_output_channels=[], label=label, description=description)
         node.devices.append(dev)
 
         # Fetch channel information from IS-08 API
@@ -970,9 +976,11 @@ class NMOSRegistry:
                 logger.info(f"linked sender node {parent.node_id} to receiver {receiver.device_id}")
                 parent.senders.append(receiver)
             else:
-                logger.info("no subscriptions for sender yet")
+                if self.debug_registry:
+                    logger.info("no subscriptions for sender yet")
         else:
-            logger.info("no subscriptions for sender")
+            if self.debug_registry:
+                logger.info("no subscriptions for sender")
 
         # Notify UI about sender addition
         if self.sender_added_callback:
@@ -1067,7 +1075,8 @@ class NMOSRegistry:
                         except RuntimeError:
                             self.device_added_callback(unknown_node_id, sender_id)
 
-                logger.info(f"linked receiver node {parent.node_id} to sender {sender.device_id}")
+                if self.debug_registry:
+                    logger.info(f"linked receiver node {parent.node_id} to sender {sender.device_id}")
                 parent.receivers.append(sender)
             else:
                 logger.info("no subscriptions for receiver yet")
@@ -1104,7 +1113,8 @@ class NMOSRegistry:
             resource_type = data.get('type')
             resource_data = data.get('data', {})
 
-            logger.info(f"Received registration request: {resource_type}")
+            if self.debug_registry:
+                logger.info(f"Received registration request: {resource_type}")
 
             match resource_type:
                 case 'node':

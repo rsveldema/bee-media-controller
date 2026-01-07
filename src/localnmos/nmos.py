@@ -72,6 +72,8 @@ class NMOS_Device:
     receivers: List['NMOS_Device']
     is08_input_channels: List[InputDevice]
     is08_output_channels: List[OutputDevice] # given ["Out1/", "Out2/"] for /x-nmos/channelmapping/v1.1/outputs, then there is one entry in the list for each
+    label: str = ""
+    description: str = ""
 
     def __post_init__(self):
         if self.is08_input_channels is None:

@@ -4,6 +4,7 @@ Local NMOS
 
 import asyncio
 import socket
+import sys
 from typing import List
 from datetime import datetime
 from enum import Enum
@@ -40,9 +41,11 @@ class UI_Matrix_Connection:
         self.node = endpoint.parent
 
 class UI_NMOS_Device:
-    def __init__(self, device_id: str, parent: 'UI_NMOS_Node') -> None:
+    def __init__(self, device_id: str, parent: 'UI_NMOS_Node', label: str = "", description: str = "") -> None:
         self.device_id = device_id
         self.parent = parent
+        self.label = label
+        self.description = description
         self.senders: list['UI_NMOS_Sender'] = []
         self.receivers: list['UI_NMOS_Receiver'] = []
         self.channels: list[UI_NMOS_Channel] = []
@@ -392,7 +395,8 @@ class LocalNMOS(toga.App):
                     fill.write_text(node_label, 0, 0, font, Baseline.BOTTOM)
 
                 # Draw device and sender ID
-                device_label = f" >{s_conn.device.device_id[:6]}"
+                device_name = s_conn.device.label if s_conn.device.label else s_conn.device.device_id
+                device_label = f" >{device_name[:12]}"
                 sender_label = f":{s_conn.endpoint.sender_id[:6]}"
                 with self.canvas.context.Fill(color=rgb(100, 140, 200)) as fill:
                     fill.write_text(device_label, 0, 12, font_small, Baseline.BOTTOM)
@@ -419,7 +423,8 @@ class LocalNMOS(toga.App):
             # Draw labels only for the first channel of a receiver
             if r_conn.endpoint != prev_receiver:
                 node_label = r_conn.node.list_entry.get("title", f"Node {i}")[:12]
-                device_label = f" >{r_conn.device.device_id[:6]}"
+                device_name = r_conn.device.label if r_conn.device.label else r_conn.device.device_id
+                device_label = f" >{device_name[:12]}"
                 receiver_id_label = f":{r_conn.endpoint.receiver_id[:6]}"
 
                 with self.canvas.context.Fill(color=rgb(140, 80, 40)) as fill:
@@ -599,11 +604,22 @@ class LocalNMOS(toga.App):
             if node_id and node_id in self.model.node_map:
                 ui_node = self.model.node_map[node_id]
                 
-                # List devices
+                # List devices with label and description from NMOS registry
                 if ui_node.devices:
                     info_text += f"Devices ({len(ui_node.devices)}):\n"
                     for dev in ui_node.devices:
                         info_text += f"  • {dev.device_id}\n"
+                        
+                        # Get label and description from NMOS_Device if available
+                        if self.registry and node_id in self.registry.nodes:
+                            nmos_node = self.registry.nodes[node_id]
+                            for nmos_device in nmos_node.devices:
+                                if nmos_device.device_id == dev.device_id:
+                                    if nmos_device.label:
+                                        info_text += f"    Label: {nmos_device.label}\n"
+                                    if nmos_device.description:
+                                        info_text += f"    Description: {nmos_device.description}\n"
+                                    break
                     info_text += "\n"
                 
                 # List senders
@@ -676,7 +692,7 @@ class LocalNMOS(toga.App):
             # Add devices from the registered node
             for nmos_device in node.devices:
                 # Create UI device
-                ui_device = UI_NMOS_Device(device_id=nmos_device.device_id, parent=ui_node)
+                ui_device = UI_NMOS_Device(device_id=nmos_device.device_id, parent=ui_node, label=nmos_device.label, description=nmos_device.description)
                 ui_node.add_device(ui_device)
                 print(f"  Added device: {nmos_device.device_id} to node {node.name}")
 
@@ -702,7 +718,8 @@ class LocalNMOS(toga.App):
                 # Check if sender already exists
                 for existing_sender in ui_device.senders:
                     if existing_sender.sender_id == sender_id:
-                        print(f"  Sender {sender_id} already exists in device {device_id}, ignoring duplicate")
+                        if '--debug-registry' in sys.argv:
+                            print(f"  Sender {sender_id} already exists in device {device_id}, ignoring duplicate")
                         return
 
                 # Create and add sender
@@ -727,7 +744,8 @@ class LocalNMOS(toga.App):
                 # Check if receiver already exists
                 for existing_receiver in ui_device.receivers:
                     if existing_receiver.receiver_id == receiver_id:
-                        print(f"  Receiver {receiver_id} already exists in device {device_id}, ignoring duplicate")
+                        if '--debug-registry' in sys.argv:
+                            print(f"  Receiver {receiver_id} already exists in device {device_id}, ignoring duplicate")
                         return
 
                 # Create and add receiver
@@ -758,28 +776,31 @@ class LocalNMOS(toga.App):
         print(f"Device added: {device_id} to node {node_id}")
         if node_id in self.model.node_map:
             ui_node = self.model.node_map[node_id]
-            ui_device = UI_NMOS_Device(device_id=device_id, parent=ui_node)
 
             if self.registry == None:
-                return
+                ui_device = UI_NMOS_Device(device_id=device_id, parent=ui_node)
+            else:
+                # Get the NMOS_Device to access its label, description, and channels
+                nmos_node = self.registry.nodes.get(node_id)
+                ui_device = UI_NMOS_Device(device_id=device_id, parent=ui_node)
+                
+                if nmos_node:
+                    for dev in nmos_node.devices:
+                        if dev.device_id == device_id:
+                            # Update label and description from NMOS_Device
+                            ui_device.label = dev.label
+                            ui_device.description = dev.description
+                            ui_device.channels = []
 
-            # Get the NMOS_Device to access its channels
-            nmos_node = self.registry.nodes.get(node_id)
-            if nmos_node:
-                for dev in nmos_node.devices:
-                    if dev.device_id == device_id:
+                            print(f" examine device channels: {dev.is08_input_channels}, {dev.is08_output_channels}")
 
-                        ui_device.channels = []
-
-                        print(f" examine device channels: {dev.is08_input_channels}, {dev.is08_output_channels}")
-
-                        for d in dev.is08_input_channels:
-                            for c in d.channels:
-                                ui_device.channels.append(UI_NMOS_Channel(type=ChannelType.INPUT, id=c.id, name=c.label))
-                        for d in dev.is08_output_channels:
-                            for c in d.channels:
-                                ui_device.channels.append(UI_NMOS_Channel(type=ChannelType.OUTPUT, id=c.id, name=c.label))
-                        break
+                            for d in dev.is08_input_channels:
+                                for c in d.channels:
+                                    ui_device.channels.append(UI_NMOS_Channel(type=ChannelType.INPUT, id=c.id, name=c.label))
+                            for d in dev.is08_output_channels:
+                                for c in d.channels:
+                                    ui_device.channels.append(UI_NMOS_Channel(type=ChannelType.OUTPUT, id=c.id, name=c.label))
+                            break
 
             ui_node.add_device(ui_device)
             self.draw_routing_matrix()
