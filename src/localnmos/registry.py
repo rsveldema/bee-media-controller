@@ -5,6 +5,7 @@ This module provides NMOS device discovery using mDNS/DNS-SD (Zeroconf).
 It discovers IS-04 and IS-05 NMOS services on the local network.
 """
 
+import argparse
 import asyncio
 import inspect
 import logging
@@ -45,6 +46,46 @@ if not logger.handlers:
     console_handler.setFormatter(formatter)
     logger.addHandler(console_handler)
     logger.setLevel(logging.INFO)
+
+
+def create_argument_parser():
+    """Create and configure the argument parser for NMOS Registry"""
+    parser = argparse.ArgumentParser(
+        description='NMOS Registry with MDNS discovery support',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog='''
+Examples:
+  python -m localnmos --listen-ip=192.168.1.100
+  python -m localnmos --debug-registry
+  python -m localnmos --listen-ip=10.0.0.5 --debug-registry
+        '''
+    )
+    parser.add_argument(
+        '--listen-ip',
+        type=str,
+        default=None,
+        metavar='IP_ADDRESS',
+        help='IP address to bind the registry server to (default: auto-detect for mDNS, 0.0.0.0 for HTTP)'
+    )
+    parser.add_argument(
+        '--debug-registry',
+        action='store_true',
+        help='Enable debug logging for registry operations'
+    )
+    return parser
+
+
+# Global argument parser instance
+_arg_parser = create_argument_parser()
+_parsed_args = None
+
+
+def get_parsed_args():
+    """Get parsed command line arguments, parsing them if not already done"""
+    global _parsed_args
+    if _parsed_args is None:
+        _parsed_args = _arg_parser.parse_args()
+    return _parsed_args
 
 
 class NMOSServiceListener(ServiceListener):
@@ -152,9 +193,6 @@ class NMOSRegistry:
     Supports IS-04 (Discovery and Registration) and IS-05 (Device Connection Management).
     """
 
-    # Debug flag - check if --debug-registry is in command line arguments
-    debug_registry = '--debug-registry' in sys.argv
-
     # NMOS service types for mDNS discovery
     NMOS_NODE_SERVICE = "_nmos-node._tcp.local."
     NMOS_REGISTRATION_SERVICE = "_nmos-registration._tcp.local."
@@ -167,7 +205,6 @@ class NMOSRegistry:
     NMOS_CHANNELMAPPING_SERVICE = "_nmos-channelmapping._tcp.local."  # IS-08 Channel Mapping
     NMOS_SYSTEM_SERVICE = "_nmos-system._tcp.local."  # IS-09 System Parameters
 
-
     def __init__(
         self,
         node_added_callback: Optional[Callable] = None,
@@ -176,6 +213,7 @@ class NMOSRegistry:
         sender_added_callback: Optional[Callable] = None,
         receiver_added_callback: Optional[Callable] = None,
         channel_updated_callback: Optional[Callable] = None,
+        listen_ip: Optional[str] = None,
     ):
         """
         Initialize the NMOS registry
@@ -187,6 +225,7 @@ class NMOSRegistry:
             sender_added_callback: Callback function called when a sender is registered
             receiver_added_callback: Callback function called when a receiver is registered
             channel_updated_callback: Callback function called when device channels are updated
+            listen_ip: IP address to bind to (overrides command line --listen-ip argument)
         """
         self.node_added_callback = node_added_callback
         self.node_removed_callback = node_removed_callback
@@ -194,6 +233,15 @@ class NMOSRegistry:
         self.sender_added_callback = sender_added_callback
         self.receiver_added_callback = receiver_added_callback
         self.channel_updated_callback = channel_updated_callback
+
+        # Get parsed arguments
+        args = get_parsed_args()
+        
+        # Use provided listen_ip or fall back to command line argument
+        self.listen_ip = listen_ip or args.listen_ip
+        
+        # Store debug flag from command line arguments
+        self.debug_registry = args.debug_registry
 
         self.zeroconf: Optional[Zeroconf] = None
         self.async_zeroconf: Optional[AsyncZeroconf] = None
@@ -729,7 +777,13 @@ class NMOSRegistry:
         try:
             # Get local hostname and IP
             hostname = socket.gethostname()
-            local_ip = socket.gethostbyname(hostname)
+            # Use specified listen IP or auto-detect
+            if self.listen_ip:
+                local_ip = self.listen_ip
+                logger.info(f"Using specified listen IP: {local_ip}")
+            else:
+                local_ip = socket.gethostbyname(hostname)
+                logger.info(f"Auto-detected IP: {local_ip}")
 
             # Service configuration
             service_name = f"NMOS Registry on {hostname}.{mdns_service_type}"
@@ -788,10 +842,12 @@ class NMOSRegistry:
             self.registration_runner = web.AppRunner(app)
             await self.registration_runner.setup()
 
-            site = web.TCPSite(self.registration_runner, '0.0.0.0', self.registration_port)
+            # Bind to specified IP or all interfaces
+            bind_address = self.listen_ip or '0.0.0.0'
+            site = web.TCPSite(self.registration_runner, bind_address, self.registration_port)
             await site.start()
 
-            logger.info(f"Registration HTTP server started on port {self.registration_port}")
+            logger.info(f"Registration HTTP server started on {bind_address}:{self.registration_port}")
         except Exception as e:
             error_msg = f"Failed to start registration server: {e}"
             logger.error(error_msg)
@@ -955,7 +1011,7 @@ class NMOSRegistry:
 
         parent = self.find_device(sender_device_id)
         if parent is None:
-            return self.error_json_response({'status': 'bad parent ID'}, status=400)
+            return self.error_json_response({'status': f'sender-registration: bad device parent ID: {sender_device_id}'}, status=400)
 
         # Check if sender already exists in this device
         for existing_sender in parent.senders:
@@ -973,7 +1029,8 @@ class NMOSRegistry:
                 if receiver is None:
                     return self.error_json_response({'status': f'bad receiver ID:{receiver_id}'}, status=400)
 
-                logger.info(f"linked sender node {parent.node_id} to receiver {receiver.device_id}")
+                if self.debug_registry:
+                    logger.info(f"linked sender node {parent.node_id} to receiver {receiver.device_id}")
                 parent.senders.append(receiver)
             else:
                 if self.debug_registry:
@@ -1008,7 +1065,7 @@ class NMOSRegistry:
 
         parent = self.find_device(receiver_device_id)
         if parent is None:
-            return self.error_json_response({'status': 'bad parent ID'}, status=400)
+            return self.error_json_response({'status': f'receiver-registration: bad device parent ID: {receiver_device_id}'}, status=400)
 
         # Check if receiver already exists in this device
         for existing_receiver in parent.receivers:

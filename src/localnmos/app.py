@@ -583,7 +583,7 @@ class LocalNMOS(toga.App):
         main_box.add(toga.Divider())
         main_box.add(self.canvas)
 
-        self.main_window = toga.MainWindow(title=self.formal_name)
+        self.main_window = toga.MainWindow(title=self.formal_name, size=(1600, 1200))
         self.main_window.content = main_box
         self.main_window.show()
 
