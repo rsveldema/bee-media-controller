@@ -1178,8 +1178,10 @@ class NMOSRegistry:
     def _handle_registration_unknown(self, request, resource_data: dict):
         return json_response({'status': 'registered'}, status=201)
 
-    async def _handle_registration(self, request):
+    async def _handle_registration(self, request: aiohttp.ClientRequest):
         """Handle device registration and re-registration POST requests"""
+        resource_type = 'unknown'
+        resource_data = {}
         try:
             api_version = request.match_info.get('api_version', 'v1.3')
             data = await request.json()
@@ -1214,7 +1216,8 @@ class NMOSRegistry:
             error_msg = f"Error handling registration: {e}"
             logger.error(error_msg)
             ErrorLog().add_error(error_msg, exception=e, traceback_str=traceback.format_exc())
-            return self.error_json_response({'error': str(e)}, status=400)
+            msg = str(e) + " for resource type " + resource_type + " with data " + str(await request.text())
+            return self.error_json_response({'error': msg}, status=400)
 
     async def _handle_deregistration(self, request):
         """Handle device deregistration DELETE requests"""
