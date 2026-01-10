@@ -305,7 +305,19 @@ class RoutingMatrixCanvas:
 
         matrix_width = len(senders) * self.cell_width
         matrix_height = len(receivers) * self.cell_height
-        receivers_label_x_offset = 20  # Position close to the left edge
+        
+        # Get canvas dimensions
+        canvas_width = self.canvas.layout.content_width
+        canvas_height = self.canvas.layout.content_height
+        
+        # Calculate centered margins with minimum values
+        receivers_label_x_offset = 20
+        label_space_left = 150  # Space needed for receiver labels on the left
+        label_space_top = 80    # Space needed for sender labels at the top
+        
+        # Center the matrix, but ensure minimum margins for labels
+        self.margin_left = max(label_space_left, (canvas_width - matrix_width - label_space_left) / 2)
+        self.margin_top = max(label_space_top, (canvas_height - matrix_height - label_space_top) / 2)
 
         self.draw_matrix_grid(senders, receivers, matrix_width, matrix_height)
         self.draw_axis_labels(senders, receivers, matrix_width, matrix_height, receivers_label_x_offset)

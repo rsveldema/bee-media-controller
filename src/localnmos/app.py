@@ -702,6 +702,9 @@ class LocalNMOS(toga.App):
         """When clicking on the routing matrix at (x, y), toggle the channel mapping between output and input channels.
         Uses IS-08 channel mapping API to update the routing.
         """
+        if not hasattr(self, 'matrix_canvas'):
+            return
+            
         # Get all nodes (same logic as draw_routing_matrix)
         nodes = list(self.model.node_map.values())
 
@@ -713,18 +716,18 @@ class LocalNMOS(toga.App):
             # No nodes to route
             return
 
-        matrix_width = len(senders) * self.cell_width
-        matrix_height = len(receivers) * self.cell_height
+        matrix_width = len(senders) * self.matrix_canvas.cell_width
+        matrix_height = len(receivers) * self.matrix_canvas.cell_height
 
         # Check if click is within the matrix bounds
-        if x < self.margin_left or x > self.margin_left + matrix_width:
+        if x < self.matrix_canvas.margin_left or x > self.matrix_canvas.margin_left + matrix_width:
             return
-        if y < self.margin_top or y > self.margin_top + matrix_height:
+        if y < self.matrix_canvas.margin_top or y > self.matrix_canvas.margin_top + matrix_height:
             return
 
         # Calculate which cell was clicked
-        sender_idx = int((x - self.margin_left) / self.cell_width)
-        receiver_idx = int((y - self.margin_top) / self.cell_height)
+        sender_idx = int((x - self.matrix_canvas.margin_left) / self.matrix_canvas.cell_width)
+        receiver_idx = int((y - self.matrix_canvas.margin_top) / self.matrix_canvas.cell_height)
 
         # Validate indices
         if sender_idx < 0 or sender_idx >= len(senders):
