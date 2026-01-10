@@ -664,6 +664,24 @@ class NMOSRegistry:
             logger.error(error_msg)
             ErrorLog().add_error(error_msg, exception=e, traceback_str=traceback.format_exc())
 
+    async def refresh_mdns_announcement(self):
+        """Trigger an immediate mDNS service announcement"""
+        if not self._running:
+            logger.warning("Registry not running, cannot refresh mDNS announcement")
+            return
+        
+        try:
+            if self.service_info and self.async_zeroconf:
+                # Update the service to trigger a fresh mDNS announcement
+                await self.async_zeroconf.async_update_service(self.service_info)
+                logger.info("Manual mDNS service announcement sent")
+            else:
+                logger.warning("Service info not available for mDNS announcement")
+        except Exception as e:
+            error_msg = f"Error refreshing mDNS announcement: {e}"
+            logger.error(error_msg)
+            ErrorLog().add_error(error_msg, exception=e, traceback_str=traceback.format_exc())
+
     async def start(self):
         """Start the NMOS registry and begin discovering devices"""
         if self._running:
