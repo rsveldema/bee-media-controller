@@ -612,8 +612,19 @@ class LocalNMOS(toga.App):
                 ui_node.add_device(ui_device)
                 print(f"  GUI: Added device: {nmos_device.device_id} to node {node.name}")
 
-                # Note: Senders and receivers are registered separately via the registration API
-                # They will be added when sender/receiver registration messages arrive
+                # Add senders from this device
+                for nmos_sender in nmos_device.senders:
+                    sender = UI_NMOS_Sender(sender_id=nmos_sender.sender_id, device=ui_device)
+                    ui_device.senders.append(sender)
+                    ui_node.add_sender(sender)
+                    print(f"  GUI: Added sender: {nmos_sender.sender_id} ({nmos_sender.label}) to device {nmos_device.device_id}")
+
+                # Add receivers from this device
+                for nmos_receiver in nmos_device.receivers:
+                    receiver = UI_NMOS_Receiver(receiver_id=nmos_receiver.receiver_id, device=ui_device)
+                    ui_device.receivers.append(receiver)
+                    ui_node.add_receiver(receiver)
+                    print(f"  GUI: Added receiver: {nmos_receiver.receiver_id} ({nmos_receiver.label}) to device {nmos_device.device_id}")
 
         self.listbox.refresh()
         self.draw_routing_matrix()

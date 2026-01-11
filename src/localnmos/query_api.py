@@ -20,9 +20,9 @@ except ImportError:
 
 from .nmos import NMOS_Node
 from .error_log import ErrorLog
+from .logging_utils import create_logger
 
-
-logger = logging.getLogger(__name__)
+logger = create_logger(__name__)
 
 
 class NMOSQueryAPI:

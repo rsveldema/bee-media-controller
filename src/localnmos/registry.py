@@ -34,20 +34,9 @@ except ImportError:
 
 import aiohttp
 
+from .logging_utils import create_logger
 
-logger = logging.getLogger(__name__)
-
-# Configure logging to output to console
-if not logger.handlers:
-    console_handler = logging.StreamHandler()
-    console_handler.setLevel(logging.DEBUG)
-    formatter = logging.Formatter(
-        '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        datefmt='%Y-%m-%d %H:%M:%S'
-    )
-    console_handler.setFormatter(formatter)
-    logger.addHandler(console_handler)
-    logger.setLevel(logging.INFO)
+logger = create_logger(__name__)
 
 
 def create_argument_parser():
@@ -609,14 +598,17 @@ class NMOSRegistry:
 
         # Host registration service for other devices to discover
         try:
-            # for 1.3 clients
-            await self.mdns_service.register_service(self.NMOS_REGISTER_SERVICE, 8080)
-            # for 1.2 clients
-            await self.mdns_service.register_service(self.NMOS_REGISTRATION_SERVICE, 8080)
+            # Start HTTP servers first, then advertise them via mDNS
             await self._start_registration_server()
-            # Start Query API server and register its mDNS service
             await self._start_query_server()
+            
+            # Now advertise the services via mDNS (for 1.3 clients)
+            await self.mdns_service.register_service(self.NMOS_REGISTER_SERVICE, 8080, "Registration API")
+            # for 1.2 clients
+            await self.mdns_service.register_service(self.NMOS_REGISTRATION_SERVICE, 8080, "Registration API")
+            # Advertise Query API
             await self.mdns_service.register_service(self.NMOS_QUERY_SERVICE, 8081, "Query API")
+            
             # Start heartbeat monitoring
             self.heartbeat_task = asyncio.create_task(self._monitor_heartbeats())
             logger.info("Heartbeat monitoring started")
@@ -750,7 +742,7 @@ class NMOSRegistry:
 
     def _handle_registration_node(self, request, resource_data: dict, api_version: str):
         # Register or re-register a node
-        device_id = resource_data.get('id', 'unknown')
+        node_id = resource_data.get('id', 'unknown')
         label = resource_data.get('label', 'Unknown Device')
 
         # Try to get address from request
@@ -776,23 +768,23 @@ class NMOSRegistry:
                             pass
 
         # Update heartbeat timestamp
-        self.device_heartbeats[device_id] = time.time()
+        self.device_heartbeats[node_id] = time.time()
 
         # Check if this is a re-registration (device already exists)
-        if device_id in self.nodes:
+        if node_id in self.nodes:
             # Re-registration: update existing device
-            logger.info(f"Device re-registered: {label} ({device_id}) from {client_host}")
-            existing_device = self.nodes[device_id]
+            logger.info(f"Device re-registered: {label} ({node_id}) from {client_host}")
+            existing_device = self.nodes[node_id]
             # Update properties with new data
             existing_device.properties.update(resource_data)
-            return json_response({'status': 're-registered', 'id': device_id}, status=200)
+            return json_response({'status': 're-registered', 'id': node_id}, status=200)
 
         devices = []
 
         # New registration
-        device = NMOS_Node(
+        node = NMOS_Node(
             name=label,
-            node_id=device_id,
+            node_id=node_id,
             address=client_host,
             port=client_port,  # Default HTTP port, may be in data
             service_type='_nmos-register._tcp.local.',
@@ -801,10 +793,10 @@ class NMOSRegistry:
             devices=devices
         )
 
-        logger.info(f"Device registered via HTTP: {label} ({device_id}) from {client_host}:{client_port}")
+        logger.info(f"Device registered via HTTP: {label} ({node_id}) from {client_host}:{client_port}")
         # Add to devices and trigger callback
-        self._on_node_added(device)
-        return json_response({'status': 'registered', 'id': device_id}, status=201)
+        self._on_node_added(node)
+        return json_response({'status': 'registered', 'id': node_id}, status=201)
 
 
     def get_node_by_id(self, node_id:str) -> NMOS_Node|None:
@@ -838,7 +830,7 @@ class NMOSRegistry:
 
         senders = []
         receivers = []
-        dev = NMOS_Device(node_id=node_id, device_id=device_id, senders=senders, receivers=receivers, is08_input_channels=[], is08_output_channels=[], label=label, description=description)
+        dev = NMOS_Device(node_id=node_id, device_id=device_id, senders=senders, receivers=receivers, sources=[], is08_input_channels=[], is08_output_channels=[], label=label, description=description)
         node.devices.append(dev)
 
         # Fetch channel information from IS-08 API
@@ -969,6 +961,7 @@ class NMOSRegistry:
                         device_id=sender_id,
                         senders=[],
                         receivers=[],
+                        sources=[],
                         is08_input_channels=[],
                         is08_output_channels=[]
                     )

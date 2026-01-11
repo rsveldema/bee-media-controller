@@ -26,8 +26,9 @@ except ImportError:
     ServiceInfo = None
     ServiceBrowser = None
 
+from .logging_utils import create_logger
 
-logger = logging.getLogger(__name__)
+logger = create_logger(__name__)
 
 
 class NMOSServiceListener(ServiceListener):
@@ -144,7 +145,7 @@ class NMOSMDNSService:
         self.zeroconf: Optional[Zeroconf] = None
         self.listener: Optional[NMOSServiceListener] = None
         self.browsers = []
-        self.service_info: Optional[ServiceInfo] = None
+        self.registered_services: list[ServiceInfo] = []  # Store multiple registered services
         self.announcement_task: Optional[asyncio.Task] = None
         self._running = False
 
@@ -251,7 +252,7 @@ class NMOSMDNSService:
             }
 
             # Create service info
-            self.service_info = ServiceInfo(
+            service_info = ServiceInfo(
                 service_type,
                 service_name,
                 addresses=[socket.inet_aton(local_ip)],
@@ -261,7 +262,8 @@ class NMOSMDNSService:
             )
 
             # Register the service
-            await self.async_zeroconf.async_register_service(self.service_info, strict=False)
+            await self.async_zeroconf.async_register_service(service_info, strict=False)
+            self.registered_services.append(service_info)
             logger.info(
                 f"Hosting NMOS service: {service_name} at {local_ip}:{port} via mDNS for {service_type}"
             )
@@ -272,14 +274,15 @@ class NMOSMDNSService:
             raise
 
     async def unregister_service(self):
-        """Unregister the advertised NMOS service"""
-        if self.service_info and self.async_zeroconf:
+        """Unregister all advertised NMOS services"""
+        if self.registered_services and self.async_zeroconf:
             try:
-                await self.async_zeroconf.async_unregister_service(self.service_info)
-                logger.info("NMOS service unregistered from mDNS")
-                self.service_info = None
+                for service_info in self.registered_services:
+                    await self.async_zeroconf.async_unregister_service(service_info)
+                logger.info(f"Unregistered {len(self.registered_services)} NMOS service(s) from mDNS")
+                self.registered_services.clear()
             except Exception as e:
-                error_msg = f"Failed to unregister service: {e}"
+                error_msg = f"Failed to unregister services: {e}"
                 logger.error(error_msg)
                 ErrorLog().add_error(error_msg, exception=e, traceback_str=traceback.format_exc())
 
@@ -301,10 +304,11 @@ class NMOSMDNSService:
                 # Wait 60 seconds between announcements (standard mDNS announcement interval)
                 await asyncio.sleep(60)
 
-                if self.service_info and self.async_zeroconf:
-                    # Update the service to trigger a fresh mDNS announcement
-                    await self.async_zeroconf.async_update_service(self.service_info)
-                    logger.debug("Service announcement sent via mDNS")
+                if self.registered_services and self.async_zeroconf:
+                    # Update all services to trigger fresh mDNS announcements
+                    for service_info in self.registered_services:
+                        await self.async_zeroconf.async_update_service(service_info)
+                    logger.debug(f"Announced {len(self.registered_services)} service(s) via mDNS")
 
             except asyncio.CancelledError:
                 logger.info("Periodic service announcements cancelled")
@@ -322,9 +326,10 @@ class NMOSMDNSService:
             return
         
         try:
-            if self.service_info and self.async_zeroconf:
-                await self.async_zeroconf.async_update_service(self.service_info)
-                logger.info("Manual service announcement sent via mDNS")
+            if self.registered_services and self.async_zeroconf:
+                for service_info in self.registered_services:
+                    await self.async_zeroconf.async_update_service(service_info)
+                logger.info(f"Manual announcement sent for {len(self.registered_services)} service(s) via mDNS")
         except Exception as e:
             error_msg = f"Error refreshing mDNS announcement: {e}"
             logger.error(error_msg)

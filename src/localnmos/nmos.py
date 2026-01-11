@@ -60,7 +60,42 @@ class OutputDevice:
             self.channels = []
 
 
+@dataclass
+class NMOS_Sender:
+    """Represents an IS-04 NMOS sender"""
+    sender_id: str
+    label: str = ""
+    description: str = ""
+    flow_id: str = ""
+    transport: str = ""
+    device_id: str = ""
+    manifest_href: str = ""
 
+
+@dataclass
+class NMOS_Receiver:
+    """Represents an IS-04 NMOS receiver"""
+    receiver_id: str
+    label: str = ""
+    description: str = ""
+    format: str = ""
+    transport: str = ""
+    device_id: str = ""
+
+
+@dataclass
+class NMOS_Source:
+    """Represents an IS-04 NMOS source"""
+    source_id: str
+    label: str = ""
+    description: str = ""
+    format: str = ""
+    device_id: str = ""
+    parents: List[str] = None
+    
+    def __post_init__(self):
+        if self.parents is None:
+            self.parents = []
 
 
 @dataclass
@@ -68,8 +103,9 @@ class NMOS_Device:
     """Represents an NMOS device discovered on the network"""
     node_id: str
     device_id: str
-    senders: List['NMOS_Device']
-    receivers: List['NMOS_Device']
+    senders: List[NMOS_Sender]
+    receivers: List[NMOS_Receiver]
+    sources: List[NMOS_Source]
     is08_input_channels: List[InputDevice]
     is08_output_channels: List[OutputDevice] # given ["Out1/", "Out2/"] for /x-nmos/channelmapping/v1.1/outputs, then there is one entry in the list for each
     label: str = ""
@@ -84,6 +120,8 @@ class NMOS_Device:
             self.senders = []
         if self.receivers is None:
             self.receivers = []
+        if self.sources is None:
+            self.sources = []
 
 
 @dataclass
