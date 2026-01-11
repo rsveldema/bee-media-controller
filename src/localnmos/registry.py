@@ -213,19 +213,16 @@ class NMOSRegistry:
                     resp = responses[i]
                     if isinstance(resp, Exception):
                         error_msg = f"Error fetching {key} for {resource_type.rstrip('s')} {resource_id}: {resp}"
-                        logger.error(error_msg)
                         ErrorLog().add_error(error_msg, exception=resp if isinstance(resp, Exception) else None)
                         return None
                     if resp.status != 200:
                         error_msg = f"Failed to fetch {key} for {resource_type.rstrip('s')} {resource_id}, status: {resp.status}"
-                        logger.error(error_msg)
                         ErrorLog().add_error(error_msg)
                         return None
                     results[key] = await resp.json()
                 return results
             except Exception as e:
                 error_msg = f"Error processing details for {resource_type.rstrip('s')} {resource_id}: {e}"
-                logger.error(error_msg)
                 ErrorLog().add_error(error_msg, exception=e, traceback_str=traceback.format_exc())
                 return None
 
@@ -235,13 +232,11 @@ class NMOSRegistry:
             async with session.get(resources_url) as response:
                 if response.status != 200:
                     error_msg = f"Failed to fetch {resource_type} list from {resources_url}: {response.status}"
-                    logger.error(error_msg)
                     ErrorLog().add_error(error_msg)
                     return []
                 resource_ids = await response.json()
                 if not isinstance(resource_ids, list):
                     error_msg = f"Expected a list of {resource_type} IDs from {resources_url}, but got {type(resource_ids)}"
-                    logger.error(error_msg)
                     ErrorLog().add_error(error_msg)
                     return []
 
@@ -252,7 +247,6 @@ class NMOSRegistry:
                         return device_constructor(resource_id, details)
                     except Exception as e:
                         error_msg = f"Error constructing device for {resource_type.rstrip('s')} {resource_id}: {e}"
-                        logger.error(error_msg)
                         ErrorLog().add_error(error_msg, exception=e, traceback_str=traceback.format_exc())
                         traceback.print_exception(e)
                 return None
@@ -265,7 +259,6 @@ class NMOSRegistry:
 
         except Exception as e:
             error_msg = f"Error fetching IS-08 {resource_type} for node {node.node_id}: {e}"
-            logger.error(error_msg)
             ErrorLog().add_error(error_msg, exception=e, traceback_str=traceback.format_exc())
             return []
 
@@ -336,7 +329,6 @@ class NMOSRegistry:
             async with session.get(mapping_url) as response:
                 if response.status != 200:
                     error_msg = f"Failed to fetch channel mapping from {mapping_url}: {response.status}"
-                    logger.error(error_msg)
                     ErrorLog().add_error(error_msg)
                     return
 
@@ -420,7 +412,6 @@ class NMOSRegistry:
                             logger.debug(f"  No input mapping for {output_device.name}/{output_channel.label}")
         except Exception as e:
             error_msg = f"Error fetching or processing IS-08 mapping for device {device.device_id}: {e}"
-            logger.error(error_msg)
             ErrorLog().add_error(error_msg, exception=e, traceback_str=traceback.format_exc())
 
 
@@ -445,7 +436,6 @@ class NMOSRegistry:
 
         except Exception as e:
             error_msg = f"Error fetching channels for device {device.device_id}: {e}"
-            logger.error(error_msg)
             ErrorLog().add_error(error_msg, exception=e, traceback_str=traceback.format_exc())
 
     async def refresh_mdns_announcement(self):
@@ -463,7 +453,6 @@ class NMOSRegistry:
 
         if Zeroconf is None:
             error_msg = "zeroconf library not available. Install with: pip install zeroconf"
-            logger.error(error_msg)
             ErrorLog().add_error(error_msg)
             return
 
@@ -512,7 +501,6 @@ class NMOSRegistry:
             await self.mdns_service.start_periodic_announcements()
         except Exception as e:
             error_msg = f"Failed to start registration service (non-fatal): {e}"
-            logger.error(error_msg)
             ErrorLog().add_error(error_msg, exception=e, traceback_str=traceback.format_exc())
 
     async def stop(self):
@@ -565,7 +553,6 @@ class NMOSRegistry:
             logger.info(f"Registration HTTP server started on {bind_address}:{self.registration_port}")
         except Exception as e:
             error_msg = f"Failed to start registration server: {e}"
-            logger.error(error_msg)
             ErrorLog().add_error(error_msg, exception=e, traceback_str=traceback.format_exc())
 
     async def _stop_registration_server(self):
@@ -577,7 +564,6 @@ class NMOSRegistry:
                 self.registration_runner = None
             except Exception as e:
                 error_msg = f"Failed to stop registration server: {e}"
-                logger.error(error_msg)
                 ErrorLog().add_error(error_msg, exception=e, traceback_str=traceback.format_exc())
 
     async def _start_query_server(self):
@@ -593,7 +579,6 @@ class NMOSRegistry:
             await self.query_api.start()
         except Exception as e:
             error_msg = f"Failed to start Query API server: {e}"
-            logger.error(error_msg)
             ErrorLog().add_error(error_msg, exception=e, traceback_str=traceback.format_exc())
 
     async def _stop_query_server(self):
@@ -604,7 +589,6 @@ class NMOSRegistry:
                 self.query_api = None
             except Exception as e:
                 error_msg = f"Failed to stop Query API server: {e}"
-                logger.error(error_msg)
                 ErrorLog().add_error(error_msg, exception=e, traceback_str=traceback.format_exc())
 
     async def _handle_health(self, request):
@@ -626,13 +610,12 @@ class NMOSRegistry:
             
             return json_response({'health': timestamp}, status=200)
         except Exception as e:
-            logger.error(f"Error handling health update: {e}")
-            logger.error(f"Traceback: {traceback.format_exc()}")
+            error_msg = f"Error handling health update: {e}"
+            ErrorLog().add_error(error_msg, exception=e, traceback_str=traceback.format_exc())
             return self.error_json_response({'error': str(e)}, status=400)
 
     def error_json_response(self, err, status):
         error_msg = f"return error: {err} with status {status}"
-        logger.error(error_msg)
         ErrorLog().add_error(error_msg)
         return json_response(err, status = status)
 
@@ -920,13 +903,11 @@ class NMOSRegistry:
                     return self._handle_registration_source(request, resource_data)
                 case _:
                     error_msg = f"unknown resource type: {resource_type}"
-                    logger.error(error_msg)
                     ErrorLog().add_error(error_msg)
                     return self._handle_registration_unknown(request, resource_data)
 
         except Exception as e:
             error_msg = f"Error handling registration: {e}"
-            logger.error(error_msg)
             ErrorLog().add_error(error_msg, exception=e, traceback_str=traceback.format_exc())
             msg = str(e) + " for resource type " + resource_type + " with data " + str(await request.text())
             return self.error_json_response({'error': msg}, status=400)
@@ -953,7 +934,6 @@ class NMOSRegistry:
 
         except Exception as e:
             error_msg = f"Error handling deregistration: {e}"
-            logger.error(error_msg)
             ErrorLog().add_error(error_msg, exception=e, traceback_str=traceback.format_exc())
             return json_response({'error': str(e)}, status=400)
 
@@ -995,7 +975,6 @@ class NMOSRegistry:
                 break
             except Exception as e:
                 error_msg = f"Error in heartbeat monitoring: {e}"
-                logger.error(error_msg)
                 ErrorLog().add_error(error_msg, exception=e, traceback_str=traceback.format_exc())
                 await asyncio.sleep(5)
 

@@ -148,7 +148,6 @@ async def is_05_connect_devices(
             async with session.get(f"{sender_connection_url}/active") as response:
                 if response.status != 200:
                     error_msg = f"Failed to get sender active parameters: {response.status}"
-                    logger.error(error_msg)
                     ErrorLog().add_error(error_msg)
                     return
                 sender_active = await response.json()
@@ -177,7 +176,6 @@ async def is_05_connect_devices(
                 if response.status not in [200, 202]:
                     error_text = await response.text()
                     error_msg = f"Failed to stage receiver connection: {response.status} - {error_text}"
-                    logger.error(error_msg)
                     ErrorLog().add_error(error_msg)
                     return
             
@@ -191,7 +189,6 @@ async def is_05_connect_devices(
                 if response.status not in [200, 202]:
                     error_text = await response.text()
                     error_msg = f"Failed to activate sender: {response.status} - {error_text}"
-                    logger.error(error_msg)
                     ErrorLog().add_error(error_msg)
                     return
             
@@ -199,7 +196,6 @@ async def is_05_connect_devices(
             
     except Exception as e:
         error_msg = f"Error in IS-05 device connection: {e}"
-        logger.error(error_msg)
         ErrorLog().add_error(error_msg, exception=e, traceback_str=traceback.format_exc())
 
 
@@ -243,7 +239,6 @@ async def is_05_and_is_08_sender_channel_mapping(
         rtp_output_dev_sender = await find_rtp_device(sender_node, sender_device, is_input=False)
         if not rtp_output_dev_sender:
             error_msg = f"Could not find RTP output device on sender node {sender_node.node_id}"
-            logger.error(error_msg)
             ErrorLog().add_error(error_msg)
             return
         
@@ -264,12 +259,10 @@ async def is_05_and_is_08_sender_channel_mapping(
             logger.info(f"Mapped output channel {output_chan.label} to RTP on sender, receiver gets all channels")
         else:
             error_msg = "No RTP channels available on sender"
-            logger.error(error_msg)
             ErrorLog().add_error(error_msg)
             
     except Exception as e:
         error_msg = f"Error in IS-05/IS-08 sender channel mapping: {e}"
-        logger.error(error_msg)
         ErrorLog().add_error(error_msg, exception=e, traceback_str=traceback.format_exc())
 
 
@@ -313,7 +306,6 @@ async def is_05_and_is_08_receiver_channel_mapping(
         rtp_input_dev_receiver = await find_rtp_device(receiver_node, receiver_device, is_input=True)
         if not rtp_input_dev_receiver:
             error_msg = f"Could not find RTP input device on receiver node {receiver_node.node_id}"
-            logger.error(error_msg)
             ErrorLog().add_error(error_msg)
             return
         
@@ -346,16 +338,13 @@ async def is_05_and_is_08_receiver_channel_mapping(
                 logger.info(f"Mapped RTP to input channel {input_chan.label} on receiver, sender sends all channels")
             else:
                 error_msg = "No RTP output device/channels available on receiver for routing"
-                logger.error(error_msg)
                 ErrorLog().add_error(error_msg)
         else:
             error_msg = "No RTP channels available on receiver"
-            logger.error(error_msg)
             ErrorLog().add_error(error_msg)
             
     except Exception as e:
         error_msg = f"Error in IS-05/IS-08 receiver channel mapping: {e}"
-        logger.error(error_msg)
         ErrorLog().add_error(error_msg, exception=e, traceback_str=traceback.format_exc())
 
 
@@ -392,7 +381,6 @@ async def is_05_and_is_08_connect_channel_mapping(
             async with session.get(f"{receiver_connection_url}/transportfile") as response:
                 if response.status != 200:
                     error_msg = f"Failed to get receiver transport file: {response.status}"
-                    logger.error(error_msg)
                     ErrorLog().add_error(error_msg)
                     return
                 receiver_sdp = await response.text()
@@ -408,7 +396,6 @@ async def is_05_and_is_08_connect_channel_mapping(
                 if response.status not in [200, 202]:
                     error_text = await response.text()
                     error_msg = f"Failed to activate sender: {response.status} - {error_text}"
-                    logger.error(error_msg)
                     ErrorLog().add_error(error_msg)
                     return
             
@@ -423,7 +410,6 @@ async def is_05_and_is_08_connect_channel_mapping(
                 if response.status not in [200, 202]:
                     error_text = await response.text()
                     error_msg = f"Failed to activate receiver: {response.status} - {error_text}"
-                    logger.error(error_msg)
                     ErrorLog().add_error(error_msg)
                     return
             
@@ -434,7 +420,6 @@ async def is_05_and_is_08_connect_channel_mapping(
         rtp_output_dev_sender = await find_rtp_device(sender_node, sender_device, is_input=False)
         if not rtp_output_dev_sender:
             error_msg = f"Could not find RTP output device on sender node {sender_node.node_id}"
-            logger.error(error_msg)
             ErrorLog().add_error(error_msg)
             return
         
@@ -442,7 +427,6 @@ async def is_05_and_is_08_connect_channel_mapping(
         rtp_input_dev_receiver = await find_rtp_device(receiver_node, receiver_device, is_input=True)
         if not rtp_input_dev_receiver:
             error_msg = f"Could not find RTP input device on receiver node {receiver_node.node_id}"
-            logger.error(error_msg)
             ErrorLog().add_error(error_msg)
             return
         
@@ -482,7 +466,6 @@ async def is_05_and_is_08_connect_channel_mapping(
         
     except Exception as e:
         error_msg = f"Error in IS-05/IS-08 cross-node connection: {e}"
-        logger.error(error_msg)
         ErrorLog().add_error(error_msg, exception=e, traceback_str=traceback.format_exc())
 
 
@@ -510,11 +493,12 @@ async def find_rtp_device(node: NMOS_Node, device: NMOS_Device, is_input: bool):
                 if 'rtp' in dev.name.lower() or 'network' in dev.name.lower():
                     return dev
         
-        logger.warning(f"No RTP {'input' if is_input else 'output'} device found on node {node.node_id}")
+        warning_msg = f"No RTP {'input' if is_input else 'output'} device found on node {node.node_id}"
+        logger.warning(warning_msg)
+        ErrorLog().add_error(warning_msg)
         return None
     except Exception as e:
         error_msg = f"Error finding RTP device: {e}"
-        logger.error(error_msg)
         ErrorLog().add_error(error_msg, exception=e, traceback_str=traceback.format_exc())
         return None
 
@@ -548,7 +532,6 @@ async def is_08_connect_channel_mapping(
 
         if input_channel_index is None:
             error_msg = f"Could not find channel index for input {input_chan.label} (ID: {input_chan.id}) in device {input_dev.id}"
-            logger.error(error_msg)
             ErrorLog().add_error(error_msg)
             return
 
@@ -567,7 +550,6 @@ async def is_08_connect_channel_mapping(
                 error_msg = (
                     f"Could not determine output channel key for {output_chan.label}"
                 )
-                logger.error(error_msg)
                 ErrorLog().add_error(error_msg)
                 return
 
@@ -606,11 +588,9 @@ async def is_08_connect_channel_mapping(
                 else:
                     error_text = await response.text()
                     error_msg = f"Failed to set channel mapping: {response.status} - {error_text}: tried to post: {activation_data}"
-                    logger.error(error_msg)
                     ErrorLog().add_error(error_msg)
     except Exception as e:
         error_msg = f"Error connecting channel mapping: {e}"
-        logger.error(error_msg)
         ErrorLog().add_error(
             error_msg, exception=e, traceback_str=traceback.format_exc()
         )
@@ -742,7 +722,6 @@ async def is_05_disconnect_devices(
                 if response.status not in [200, 202]:
                     error_text = await response.text()
                     error_msg = f"Failed to disable sender: {response.status} - {error_text}"
-                    logger.error(error_msg)
                     ErrorLog().add_error(error_msg)
                     return
             
@@ -756,7 +735,6 @@ async def is_05_disconnect_devices(
                 if response.status not in [200, 202]:
                     error_text = await response.text()
                     error_msg = f"Failed to disable receiver: {response.status} - {error_text}"
-                    logger.error(error_msg)
                     ErrorLog().add_error(error_msg)
                     return
             
@@ -764,7 +742,6 @@ async def is_05_disconnect_devices(
             
     except Exception as e:
         error_msg = f"Error in IS-05 device disconnection: {e}"
-        logger.error(error_msg)
         ErrorLog().add_error(error_msg, exception=e, traceback_str=traceback.format_exc())
 
 
@@ -794,7 +771,6 @@ async def is_05_and_is_08_sender_channel_disconnect(
         rtp_output_dev_sender = await find_rtp_device(sender_node, sender_device, is_input=False)
         if not rtp_output_dev_sender:
             error_msg = f"Could not find RTP output device on sender node {sender_node.node_id}"
-            logger.error(error_msg)
             ErrorLog().add_error(error_msg)
             return
         
@@ -816,7 +792,6 @@ async def is_05_and_is_08_sender_channel_disconnect(
             
     except Exception as e:
         error_msg = f"Error in IS-08 sender channel disconnect: {e}"
-        logger.error(error_msg)
         ErrorLog().add_error(error_msg, exception=e, traceback_str=traceback.format_exc())
 
 
@@ -861,12 +836,10 @@ async def is_05_and_is_08_receiver_channel_disconnect(
             logger.info(f"Cleared mapping for input channel {input_chan.label} on receiver")
         else:
             error_msg = "No RTP output device/channels available on receiver"
-            logger.error(error_msg)
             ErrorLog().add_error(error_msg)
             
     except Exception as e:
         error_msg = f"Error in IS-08 receiver channel disconnect: {e}"
-        logger.error(error_msg)
         ErrorLog().add_error(error_msg, exception=e, traceback_str=traceback.format_exc())
 
 
@@ -934,7 +907,6 @@ async def is_05_and_is_08_disconnect_channel_mapping(
         
     except Exception as e:
         error_msg = f"Error in IS-05/IS-08 cross-node disconnect: {e}"
-        logger.error(error_msg)
         ErrorLog().add_error(error_msg, exception=e, traceback_str=traceback.format_exc())
 
 
@@ -981,7 +953,6 @@ async def is_08_disconnect_channel_mapping(
                 error_msg = (
                     f"Could not determine output channel key for {output_chan.label}"
                 )
-                logger.error(error_msg)
                 ErrorLog().add_error(error_msg)
                 return
 
@@ -1012,11 +983,9 @@ async def is_08_disconnect_channel_mapping(
                 else:
                     error_text = await response.text()
                     error_msg = f"Failed to clear channel mapping: {response.status} - {error_text}"
-                    logger.error(error_msg)
                     ErrorLog().add_error(error_msg)
     except Exception as e:
         error_msg = f"Error disconnecting channel mapping: {e}"
-        logger.error(error_msg)
         ErrorLog().add_error(
             error_msg, exception=e, traceback_str=traceback.format_exc()
         )

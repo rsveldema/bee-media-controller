@@ -162,7 +162,6 @@ class NMOSMDNSService:
 
         if Zeroconf is None:
             error_msg = "Zeroconf not available - mDNS discovery disabled"
-            logger.error(error_msg)
             ErrorLog().add_error(error_msg)
             return
 
@@ -269,7 +268,6 @@ class NMOSMDNSService:
             )
         except Exception as e:
             error_msg = f"Failed to register NMOS service: {e}"
-            logger.error(error_msg)
             ErrorLog().add_error(error_msg, exception=e, traceback_str=traceback.format_exc())
             raise
 
@@ -283,7 +281,6 @@ class NMOSMDNSService:
                 self.registered_services.clear()
             except Exception as e:
                 error_msg = f"Failed to unregister services: {e}"
-                logger.error(error_msg)
                 ErrorLog().add_error(error_msg, exception=e, traceback_str=traceback.format_exc())
 
     async def start_periodic_announcements(self):
@@ -315,7 +312,6 @@ class NMOSMDNSService:
                 break
             except Exception as e:
                 error_msg = f"Error announcing service: {e}"
-                logger.error(error_msg)
                 ErrorLog().add_error(error_msg, exception=e, traceback_str=traceback.format_exc())
                 await asyncio.sleep(60)
 
@@ -332,5 +328,4 @@ class NMOSMDNSService:
                 logger.info(f"Manual announcement sent for {len(self.registered_services)} service(s) via mDNS")
         except Exception as e:
             error_msg = f"Error refreshing mDNS announcement: {e}"
-            logger.error(error_msg)
             ErrorLog().add_error(error_msg, exception=e, traceback_str=traceback.format_exc())
