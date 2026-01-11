@@ -19,16 +19,18 @@ from aiohttp.web_response import json_response
 
 from .nmos import InputChannel, InputDevice, NMOS_Device, NMOS_Node, OutputChannel, OutputDevice
 from .error_log import ErrorLog
+from .query_api import NMOSQueryAPI
+from .mdns_service import NMOSMDNSService
+from .node_discovery import register_node_from_health_update
 
 try:
-    from zeroconf import ServiceBrowser, ServiceListener, Zeroconf, ServiceInfo, InterfaceChoice
-    from zeroconf.asyncio import AsyncZeroconf, AsyncServiceBrowser, AsyncServiceInfo
+    from zeroconf import Zeroconf, ServiceInfo
+    from zeroconf.asyncio import AsyncZeroconf
 except ImportError:
     # Graceful degradation if zeroconf is not installed
-    ServiceListener = object
     Zeroconf = None
+    ServiceInfo = None
     AsyncZeroconf = None
-    InterfaceChoice = None
 
 import aiohttp
 
@@ -86,105 +88,6 @@ def get_parsed_args():
     if _parsed_args is None:
         _parsed_args = _arg_parser.parse_args()
     return _parsed_args
-
-
-class NMOSServiceListener(ServiceListener):
-    """Listens for NMOS services advertised via mDNS"""
-
-    def __init__(self, on_node_added: Callable, on_node_removed: Callable):
-        self.on_node_added = on_node_added
-        self.on_node_removed = on_node_removed
-        self.devices: Dict[str, NMOS_Node] = {}
-
-
-    def add_service(self, zc: Zeroconf, service_type: str, name: str) -> None:
-        """Called when a service is discovered"""
-        logger.info(f"Service added: {name} ({service_type})")
-
-        # Get service info
-        info = zc.get_service_info(service_type, name)
-        if info:
-            self._process_service_info(info, service_type, added=True)
-
-    def remove_service(self, zc: Zeroconf, service_type: str, name: str) -> None:
-        """Called when a service is removed"""
-        logger.info(f"Service removed: {name}")
-
-        if name in self.devices:
-            device = self.devices.pop(name)
-            if self.on_node_removed:
-                self.on_node_removed(device)
-
-
-    def get_node_by_id(self, node_id:str) -> NMOS_Node|None:
-        for e in self.devices.values():
-            if e.node_id == node_id:
-                return e
-        return None
-
-    def update_service(self, zc: Zeroconf, service_type: str, name: str) -> None:
-        """Called when a service is updated"""
-        logger.info(f"Service updated: {name}")
-
-        info = zc.get_service_info(service_type, name)
-        if info:
-            self._process_service_info(info, service_type, added=False)
-
-    def _process_service_info(
-        self, info: ServiceInfo, service_type: str, added: bool = True
-    ):
-        """Process service information and create/update device"""
-        if not info or not info.addresses:
-            return
-
-        # Get the first IPv4 address
-        address = socket.inet_ntoa(info.addresses[0])
-        port = info.port
-
-        # Parse TXT records for additional properties
-        properties = {}
-        if info.properties:
-            for key, value in info.properties.items():
-                try:
-                    properties[key.decode("utf-8")] = value.decode("utf-8")
-                except:
-                    pass
-
-        device_id=properties.get("node_id", info.name),
-        if self.get_node_by_id(device_id) is not None:
-            logger.info("already have device, ignoring")
-            return
-
-        # Extract version from properties or service type
-        # MT48 and other devices may advertise different API versions
-        api_ver = properties.get("api_ver", "v1.3")
-        api_proto = properties.get("api_proto", "http")
-
-        # Log discovered properties for debugging MT48 and other devices
-        logger.debug(f"Device {info.name} properties: {properties}")
-
-        # Create device
-        devices=[]
-
-        # we're pretty sure we've found a new Node, lets allocate it
-        logger.info(f"MDNS --> Discovered NMOS Node: {info.name} at {address}:{port} (API: {api_proto} {api_ver})")
-        node = NMOS_Node(
-            name=info.name,
-            node_id=properties.get("node_id", info.name),
-            address=address,
-            port=port,
-            service_type=service_type,
-            api_ver=api_ver,
-            properties=properties,
-            devices=devices
-        )
-
-        # Track the node
-        self.devices[info.name] = node
-
-        # Notify if this is a new node being added (not just updated)
-        if added and self.on_node_added:
-            self.on_node_added(node)
 
 
 class NMOSRegistry:
@@ -245,16 +148,14 @@ class NMOSRegistry:
         # Store debug flag from command line arguments
         self.debug_registry = args.debug_registry
 
-        self.zeroconf: Optional[Zeroconf] = None
-        self.async_zeroconf: Optional[AsyncZeroconf] = None
-        self.browsers = []
-        self.listener: Optional[NMOSServiceListener] = None
+        self.mdns_service: Optional[NMOSMDNSService] = None
+        self.zeroconf: Optional[Zeroconf] = None  # Direct reference for Query API
         self.nodes: Dict[str, NMOS_Node] = {}
         self._running = False
-        self.service_info: Optional[ServiceInfo] = None  # For hosting registration service
         self.registration_server = None  # HTTP server for device registrations
         self.registration_runner = None  # Runner for the HTTP server
         self.registration_port = 8080  # Port for registration service
+        self.query_api: Optional[NMOSQueryAPI] = None  # Query API server instance
         self.device_heartbeats: Dict[str, float] = {}  # Track last heartbeat time for each device
         self.heartbeat_timeout = 12.0  # Timeout in seconds (NMOS default is 12s)
         self.heartbeat_task = None  # Background task to check for expired registrations
@@ -655,12 +556,7 @@ class NMOSRegistry:
 
             # Notify UI about channel updates
             if self.channel_updated_callback:
-                try:
-                    asyncio.create_task(
-                        self._call_callback_with_params(self.channel_updated_callback, node.node_id, device.device_id)
-                    )
-                except RuntimeError:
-                    self.channel_updated_callback(node.node_id, device.device_id)
+                self._call_callback_with_params(self.channel_updated_callback, node.node_id, device.device_id)
 
         except Exception as e:
             error_msg = f"Error fetching channels for device {device.device_id}: {e}"
@@ -669,21 +565,10 @@ class NMOSRegistry:
 
     async def refresh_mdns_announcement(self):
         """Trigger an immediate mDNS service announcement"""
-        if not self._running:
-            logger.warning("Registry not running, cannot refresh mDNS announcement")
-            return
-        
-        try:
-            if self.service_info and self.async_zeroconf:
-                # Update the service to trigger a fresh mDNS announcement
-                await self.async_zeroconf.async_update_service(self.service_info)
-                logger.info("Manual mDNS service announcement sent")
-            else:
-                logger.warning("Service info not available for mDNS announcement")
-        except Exception as e:
-            error_msg = f"Error refreshing mDNS announcement: {e}"
-            logger.error(error_msg)
-            ErrorLog().add_error(error_msg, exception=e, traceback_str=traceback.format_exc())
+        if self.mdns_service:
+            await self.mdns_service.refresh_announcement()
+        else:
+            logger.warning("Cannot refresh announcement: mDNS service not initialized")
 
     async def start(self):
         """Start the NMOS registry and begin discovering devices"""
@@ -700,18 +585,11 @@ class NMOSRegistry:
         logger.info("Starting NMOS registry with MDNS discovery")
         self._running = True
 
-        # Create Zeroconf instance
-        # mDNS operates on UDP port 5353 for DNS-SD service discovery
-        # Use InterfaceChoice.All to ensure we respond to mDNS queries on all network interfaces
-        self.async_zeroconf = AsyncZeroconf(interfaces=InterfaceChoice.All)
-        self.zeroconf = self.async_zeroconf.zeroconf
-        assert self.zeroconf is not None
-        logger.info(f"Zeroconf initialized on all interfaces - listening on UDP port 5353 for mDNS/DNS-SD")
-
-        # Create service listener
-        self.listener = NMOSServiceListener(
+        # Create and start mDNS service
+        self.mdns_service = NMOSMDNSService(
+            listen_ip=self.listen_ip,
             on_node_added=self._on_node_added,
-            on_node_removed=self._on_node_removed,
+            on_node_removed=self._on_node_removed
         )
 
         # Browse for NMOS services
@@ -725,24 +603,25 @@ class NMOSRegistry:
             self.NMOS_SYSTEM_SERVICE,
         ]
 
-        for service_type in service_types:
-            browser = ServiceBrowser(self.zeroconf, service_type, self.listener)
-            self.browsers.append(browser)
-            logger.info(f"Browsing for {service_type} via mDNS on port 5353")
+        await self.mdns_service.start(service_types)
+        # Keep direct reference for Query API
+        self.zeroconf = self.mdns_service.zeroconf
 
         # Host registration service for other devices to discover
         try:
             # for 1.3 clients
-            await self._register_service(self.NMOS_REGISTER_SERVICE)
+            await self.mdns_service.register_service(self.NMOS_REGISTER_SERVICE, 8080)
             # for 1.2 clients
-            await self._register_service(self.NMOS_REGISTRATION_SERVICE)
+            await self.mdns_service.register_service(self.NMOS_REGISTRATION_SERVICE, 8080)
             await self._start_registration_server()
+            # Start Query API server and register its mDNS service
+            await self._start_query_server()
+            await self.mdns_service.register_service(self.NMOS_QUERY_SERVICE, 8081, "Query API")
             # Start heartbeat monitoring
             self.heartbeat_task = asyncio.create_task(self._monitor_heartbeats())
             logger.info("Heartbeat monitoring started")
             # Start periodic service announcements
-            self.announcement_task = asyncio.create_task(self._announce_service_periodically())
-            logger.info("Periodic service announcements started")
+            await self.mdns_service.start_periodic_announcements()
         except Exception as e:
             error_msg = f"Failed to start registration service (non-fatal): {e}"
             logger.error(error_msg)
@@ -765,92 +644,19 @@ class NMOSRegistry:
                 pass
             self.heartbeat_task = None
 
-        # Stop periodic announcements
-        if self.announcement_task:
-            self.announcement_task.cancel()
-            try:
-                await self.announcement_task
-            except asyncio.CancelledError:
-                pass
-            self.announcement_task = None
-
         # Stop HTTP registration server
         await self._stop_registration_server()
 
-        # Unregister hosted service
-        await self._unregister_service()
+        # Stop HTTP Query API server
+        await self._stop_query_server()
 
-        # Cancel browsers
-        for browser in self.browsers:
-            browser.cancel()
-        self.browsers.clear()
-
-        # Close Zeroconf
-        if self.async_zeroconf:
-            await self.async_zeroconf.async_close()
-            self.async_zeroconf = None
+        # Stop mDNS service
+        if self.mdns_service:
+            await self.mdns_service.stop()
+            self.mdns_service = None
             self.zeroconf = None
 
         self.nodes.clear()
-
-    async def _register_service(self, mdns_service_type: str):
-        """Register and advertise NMOS registration service via mDNS"""
-        try:
-            # Get local hostname and IP
-            hostname = socket.gethostname()
-            # Use specified listen IP or auto-detect
-            if self.listen_ip:
-                local_ip = self.listen_ip
-                logger.info(f"Using specified listen IP: {local_ip}")
-            else:
-                local_ip = socket.gethostbyname(hostname)
-                logger.info(f"Auto-detected IP: {local_ip}")
-
-            # Service configuration
-            service_name = f"NMOS Registry on {hostname}.{mdns_service_type}"
-            service_type = mdns_service_type
-            port = 8080  # Default NMOS registration API port
-
-            # TXT record properties for NMOS service
-            properties = {
-                b"api_ver": b"v1.3",
-                b"api_proto": b"http",
-                b"pri": b"100",  # Priority
-            }
-
-            # Create service info
-            self.service_info = ServiceInfo(
-                service_type,
-                service_name,
-                addresses=[socket.inet_aton(local_ip)],
-                port=port,
-                properties=properties,
-                server=f"{hostname}.local."
-            )
-
-            # Register the service
-            await self.async_zeroconf.async_register_service(self.service_info, strict=False)
-            logger.info(
-                f"Hosting NMOS registration service: {service_name} at {local_ip}:{port} via mDNs for {service_type} "
-            )
-        except Exception as e:
-            error_msg = f"Failed to register NMOS service: {e}"
-            logger.error(error_msg)
-            ErrorLog().add_error(error_msg, exception=e, traceback_str=traceback.format_exc())
-            traceback.print_exception(e)
-            sys.exit(1)
-
-    async def _unregister_service(self):
-        """Unregister the advertised NMOS registration service"""
-        if self.service_info and self.async_zeroconf:
-            try:
-                await self.async_zeroconf.async_unregister_service(self.service_info)
-                logger.info("Unregistered NMOS registration service")
-                self.service_info = None
-            except Exception as e:
-                error_msg = f"Failed to unregister service: {e}"
-                logger.error(error_msg)
-                ErrorLog().add_error(error_msg, exception=e, traceback_str=traceback.format_exc())
 
     async def _start_registration_server(self):
         """Start HTTP server to accept device registrations"""
@@ -886,15 +692,54 @@ class NMOSRegistry:
                 logger.error(error_msg)
                 ErrorLog().add_error(error_msg, exception=e, traceback_str=traceback.format_exc())
 
+    async def _start_query_server(self):
+        """Start NMOS Query API server"""
+        try:
+            self.query_api = NMOSQueryAPI(
+                nodes=self.nodes,
+                zeroconf=self.zeroconf,
+                listen_ip=self.listen_ip,
+                port=8081,
+                service_type=self.NMOS_QUERY_SERVICE
+            )
+            await self.query_api.start()
+        except Exception as e:
+            error_msg = f"Failed to start Query API server: {e}"
+            logger.error(error_msg)
+            ErrorLog().add_error(error_msg, exception=e, traceback_str=traceback.format_exc())
+
+    async def _stop_query_server(self):
+        """Stop the HTTP Query API server"""
+        if self.query_api:
+            try:
+                await self.query_api.stop()
+                self.query_api = None
+            except Exception as e:
+                error_msg = f"Failed to stop Query API server: {e}"
+                logger.error(error_msg)
+                ErrorLog().add_error(error_msg, exception=e, traceback_str=traceback.format_exc())
+
     async def _handle_health(self, request):
         """ handle health update """
-        logger.info("Received health update")
         try:
             nodeId = request.match_info.get('nodeId')
+            logger.info(f"Received health update for node {nodeId} from {request.remote}")
             timestamp = time.time()
             self.device_heartbeats[nodeId] = timestamp
+
+            if nodeId not in self.nodes:
+                logger.info(f"Node {nodeId} not found in registry, registering from health update")
+                await register_node_from_health_update(
+                    request, nodeId, self.nodes, self._on_node_added
+                )
+                logger.info(f"After registration, nodes are: {list(self.nodes.keys())}")
+            else:
+                logger.debug(f"node already registered: {nodeId}")
+            
             return json_response({'health': timestamp}, status=200)
         except Exception as e:
+            logger.error(f"Error handling health update: {e}")
+            logger.error(f"Traceback: {traceback.format_exc()}")
             return self.error_json_response({'error': str(e)}, status=400)
 
     def error_json_response(self, err, status):
@@ -1001,12 +846,7 @@ class NMOSRegistry:
 
         # Notify UI about device addition
         if self.device_added_callback:
-            try:
-                asyncio.create_task(
-                    self._call_callback_with_params(self.device_added_callback, node_id, device_id)
-                )
-            except RuntimeError:
-                self.device_added_callback(node_id, device_id)
+            self._call_callback_with_params(self.device_added_callback, node_id, device_id)
 
         return json_response({'status': 'registered'}, status=201)
 
@@ -1062,12 +902,7 @@ class NMOSRegistry:
 
         # Notify UI about sender addition
         if self.sender_added_callback:
-            try:
-                asyncio.create_task(
-                    self._call_callback_with_params(self.sender_added_callback, parent.node_id, sender_device_id, parent_device_id)
-                )
-            except RuntimeError:
-                self.sender_added_callback(parent.node_id, sender_device_id, parent_device_id)
+            self._call_callback_with_params(self.sender_added_callback, parent.node_id, sender_device_id, parent_device_id)
 
         return json_response({'status': 'registered'}, status=201)
 
@@ -1126,12 +961,7 @@ class NMOSRegistry:
 
                         # Notify about new node
                         if self.node_added_callback:
-                            try:
-                                asyncio.create_task(
-                                    self._call_callback(self.node_added_callback, unknown_node)
-                                )
-                            except RuntimeError:
-                                self.node_added_callback(unknown_node)
+                            self._call_callback(self.node_added_callback, unknown_node)
 
                     # Create the sender device and add to unknown node
                     sender = NMOS_Device(
@@ -1146,12 +976,7 @@ class NMOSRegistry:
 
                     # Notify UI about device addition
                     if self.device_added_callback:
-                        try:
-                            asyncio.create_task(
-                                self._call_callback_with_params(self.device_added_callback, unknown_node_id, sender_id)
-                            )
-                        except RuntimeError:
-                            self.device_added_callback(unknown_node_id, sender_id)
+                        self._call_callback_with_params(self.device_added_callback, unknown_node_id, sender_id)
 
                 if self.debug_registry:
                     logger.info(f"linked receiver node {parent.node_id} to sender {sender.device_id}")
@@ -1163,12 +988,7 @@ class NMOSRegistry:
 
         # Notify UI about receiver addition
         if self.receiver_added_callback:
-            try:
-                asyncio.create_task(
-                    self._call_callback_with_params(self.receiver_added_callback, parent.node_id, receiver_device_id, parent_device_id)
-                )
-            except RuntimeError:
-                self.receiver_added_callback(parent.node_id, receiver_device_id, parent_device_id)
+            self._call_callback_with_params(self.receiver_added_callback, parent.node_id, receiver_device_id, parent_device_id)
 
         return json_response({'status': 'registered'}, status=201)
 
@@ -1248,29 +1068,6 @@ class NMOSRegistry:
             ErrorLog().add_error(error_msg, exception=e, traceback_str=traceback.format_exc())
             return json_response({'error': str(e)}, status=400)
 
-    async def _announce_service_periodically(self):
-        """Periodically announce the registration service via mDNS"""
-        logger.info("Starting periodic service announcement loop")
-
-        while self._running:
-            try:
-                # Wait 60 seconds between announcements (standard mDNS announcement interval)
-                await asyncio.sleep(60)
-
-                if self.service_info and self.async_zeroconf:
-                    # Update the service to trigger a fresh mDNS announcement
-                    await self.async_zeroconf.async_update_service(self.service_info)
-                    logger.debug("Service announcement sent via mDNS")
-
-            except asyncio.CancelledError:
-                logger.info("Periodic service announcements cancelled")
-                break
-            except Exception as e:
-                error_msg = f"Error announcing service: {e}"
-                logger.error(error_msg)
-                ErrorLog().add_error(error_msg, exception=e, traceback_str=traceback.format_exc())
-                await asyncio.sleep(60)
-
     async def _monitor_heartbeats(self):
         """Monitor device heartbeats and remove devices that haven't re-registered"""
         logger.info("Starting heartbeat monitoring loop")
@@ -1323,13 +1120,7 @@ class NMOSRegistry:
 
         if self.node_added_callback:
             # Schedule callback in event loop
-            try:
-                asyncio.create_task(
-                    self._call_callback(self.node_added_callback, node)
-                )
-            except RuntimeError:
-                # If not in async context, call directly
-                self.node_added_callback(node)
+            self._call_callback(self.node_added_callback, node)
 
     def _on_node_removed(self, node: NMOS_Node):
         """Internal callback when a node is removed"""
@@ -1339,31 +1130,31 @@ class NMOSRegistry:
             del self.nodes[node.node_id]
 
         if self.node_removed_callback:
-            try:
-                asyncio.create_task(
-                    self._call_callback(self.node_removed_callback, node)
-                )
-            except RuntimeError:
-                self.node_removed_callback(node)
+            self._call_callback(self.node_removed_callback, node)
 
 
-    async def _call_callback(self, callback: Callable, device: NMOS_Node):
-        """Helper to call callbacks asynchronously"""
+    def _call_callback(self, callback: Callable, device: NMOS_Node):
+        """Helper to call callbacks (handles both sync and async)"""
         if inspect.iscoroutinefunction(callback):
-            await callback(device)
+            # For async callbacks, schedule as a task
+            try:
+                asyncio.create_task(callback(device))
+            except RuntimeError:
+                # No event loop running, skip async callback
+                logger.warning("Cannot call async callback: no event loop running")
         else:
+            # For sync callbacks, call directly
             callback(device)
 
-    async def _call_callback_with_params(self, callback: Callable, *args):
-        """Helper to call callbacks with multiple parameters asynchronously"""
+    def _call_callback_with_params(self, callback: Callable, *args):
+        """Helper to call callbacks with parameters (handles both sync and async)"""
         if inspect.iscoroutinefunction(callback):
-            await callback(*args)
+            # For async callbacks, schedule as a task
+            try:
+                asyncio.create_task(callback(*args))
+            except RuntimeError:
+                # No event loop running, skip async callback
+                logger.warning("Cannot call async callback: no event loop running")
         else:
-            callback(*args)
-
-    async def _call_callback_with_params(self, callback: Callable, *args):
-        """Helper to call callbacks with multiple parameters asynchronously"""
-        if inspect.iscoroutinefunction(callback):
-            await callback(*args)
-        else:
+            # For sync callbacks, call directly
             callback(*args)

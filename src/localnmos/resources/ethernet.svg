@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 240" width="24" height="24">
+  <g fill="currentColor">
+    <!-- Top plug pins -->
+    <rect x="77" y="0" width="12" height="40"/>
+    <rect x="97" y="0" width="12" height="40"/>
+    <rect x="117" y="0" width="12" height="40"/>
+    <rect x="137" y="0" width="12" height="40"/>
+    <rect x="157" y="0" width="12" height="40"/>
+    
+    <!-- Plug body -->
+    <rect x="60" y="40" width="120" height="90" rx="5"/>
+    
+    <!-- Cable -->
+    <rect x="90" y="130" width="30" height="40"/>
+    <path d="M 105 170 Q 105 200, 135 200 L 165 200 Q 165 230, 135 230 L 105 230 Q 105 260, 135 260" 
+          stroke="currentColor" stroke-width="30" fill="none" stroke-linecap="round"/>
+  </g>
+</svg>

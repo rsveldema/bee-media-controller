@@ -5,10 +5,13 @@ Local NMOS
 import asyncio
 import socket
 import sys
+import time
+import uuid
 from typing import List
 from datetime import datetime
 from enum import Enum
 import netifaces
+import aiohttp
 import toga
 from toga.style.pack import Pack, ROW, COLUMN
 from toga.app import AppStartupMethod, OnExitHandler, OnRunningHandler
@@ -175,17 +178,17 @@ class LocalNMOS(toga.App):
         except Exception:
             return "Unable to determine IP"
 
-    def about(self):
+    async def about(self, widget=None):
         """Show about dialog with IP address information"""
         ip_address = self.get_local_ip()
-        self.main_window.info_dialog(
+        await self.main_window.dialog(toga.InfoDialog(
             "About LocalNMOS",
             f"{self.formal_name}\n\n"
             f"Version: {self.version}\n"
             f"Build Date: {BUILD_DATE}\n"
             f"Host IP Address: {ip_address}\n\n"
             f"Local NMOS node discovery and routing matrix."
-        )
+        ))
 
     def get_senders(self) -> List[UI_Matrix_Connection]:
         """Get all sender channels as UI_Matrix_Connection objects for hierarchical display"""
@@ -239,16 +242,16 @@ class LocalNMOS(toga.App):
         self.draw_routing_matrix()
         self.update_error_status()
 
-    def show_error_log_command(self, widget):
+    async def show_error_log_command(self, widget):
         """Handler for the Show Error Log menu command"""
         error_log = ErrorLog()
         errors = error_log.get_all_errors()
         
         if not errors:
-            self.main_window.info_dialog(
+            await self.main_window.dialog(toga.InfoDialog(
                 "Error Log",
                 "No errors have been logged."
-            )
+            ))
             return
         
         # Format all errors for display
@@ -256,11 +259,11 @@ class LocalNMOS(toga.App):
         for i, error in enumerate(errors[-50:], 1):  # Show last 50 errors
             error_text += f"{i}. {error}\n"
         
-        # Show in a scrollable dialog (using info_dialog as a simple option)
-        self.main_window.info_dialog(
+        # Show in a scrollable dialog
+        await self.main_window.dialog(toga.InfoDialog(
             f"Error Log ({len(errors)} errors)",
             error_text
-        )
+        ))
 
     def update_error_status(self):
         """Update the error status label with the last error"""
@@ -308,10 +311,10 @@ class LocalNMOS(toga.App):
         interfaces = self.get_network_interfaces()
         
         if not interfaces:
-            self.main_window.info_dialog(
+            await self.main_window.dialog(toga.InfoDialog(
                 "No Interfaces Found",
                 "No network interfaces with IP addresses were found."
-            )
+            ))
             return
         
         # Build selection options
@@ -362,16 +365,16 @@ class LocalNMOS(toga.App):
                         # Restart registry with new IP
                         await self.restart_registry_with_new_ip(selected_ip)
                         
-                        self.main_window.info_dialog(
+                        await self.main_window.dialog(toga.InfoDialog(
                             "Listen IP Updated",
                             f"Listen IP successfully changed to {selected_ip}.\n\n"
                             f"The registry has been restarted and is now listening on the new interface."
-                        )
+                        ))
                     except Exception as e:
-                        self.main_window.error_dialog(
+                        await self.main_window.dialog(toga.ErrorDialog(
                             "Error Updating Listen IP",
                             f"Failed to restart registry with new IP: {e}"
-                        )
+                        ))
                 else:
                     dialog.close()
         
@@ -502,7 +505,7 @@ class LocalNMOS(toga.App):
         self.update_error_status()
         self.loop.call_soon_threadsafe(self.sync_task, "Hi")
 
-    def on_node_select(self, widget):
+    async def on_node_select(self, widget):
         """Handler for when a device is selected in the list"""
         if widget.selection:
             node_name = widget.selection.title
@@ -577,10 +580,11 @@ class LocalNMOS(toga.App):
                                         mapped_info = f" → {ch.mapped_device.label}"
                                     info_text += f"    • {ch.label} (ID: {ch.id or 'N/A'}){mapped_info}\n"
             
-            self.main_window.info_dialog(
+            await self.main_window.dialog(toga.InfoDialog(
                 "NMOS Node Information",
                 info_text
-            )
+            ))
+
 
     def on_node_added(self, node: NMOS_Node):
         """Callback when an NMOS node is discovered"""
@@ -589,7 +593,7 @@ class LocalNMOS(toga.App):
 
     def _on_node_added_ui(self, node: NMOS_Node):
         """UI update for node added (runs on main thread)"""
-        print(f"Node discovered: {node.name} at {node.address}:{node.port}")
+        print(f"GUI - Node discovered: {node.name} at {node.address}:{node.port}")
         service_type = "Node" if "node" in node.service_type else "Service"
         self.model.add_node(
             node_id=node.node_id,
@@ -606,7 +610,7 @@ class LocalNMOS(toga.App):
                 # Create UI device
                 ui_device = UI_NMOS_Device(device_id=nmos_device.device_id, parent=ui_node, label=nmos_device.label, description=nmos_device.description)
                 ui_node.add_device(ui_device)
-                print(f"  Added device: {nmos_device.device_id} to node {node.name}")
+                print(f"  GUI: Added device: {nmos_device.device_id} to node {node.name}")
 
                 # Note: Senders and receivers are registered separately via the registration API
                 # They will be added when sender/receiver registration messages arrive
