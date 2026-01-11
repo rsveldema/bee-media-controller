@@ -22,6 +22,7 @@ from .error_log import ErrorLog
 from .query_api import NMOSQueryAPI
 from .mdns_service import NMOSMDNSService
 from .node_discovery import register_node_from_health_update
+from .channel_mapping import connect_channel_mapping, disconnect_channel_mapping
 
 try:
     from zeroconf import Zeroconf, ServiceInfo
@@ -164,133 +165,28 @@ class NMOSRegistry:
                                      receiver_node: NMOS_Node, receiver_device: NMOS_Device,
                                      input_dev: InputDevice, input_chan: InputChannel):
         """Connect an output channel to an input channel using IS-08 API"""
-        try:
-            # Build the IS-08 channel mapping API URL for activations
-            activations_url = f"{sender_node.channelmapping_url}/map/activations"
-            
-            # Find the input channel index within its device
-            input_channel_index = None
-            for idx, chan in enumerate(input_dev.channels):
-                if chan is input_chan or chan.id == input_chan.id or (not chan.id and chan.label == input_chan.label):
-                    input_channel_index = idx
-                    break
-            
-            if input_channel_index is None:
-                error_msg = f"Could not find channel index for input {input_chan.label} (ID: {input_chan.id}) in device {input_dev.id}"
-                logger.error(error_msg)
-                ErrorLog().add_error(error_msg)
-                return
-            
-            # Find the output channel key (ID or index as string)
-            # According to IS-08 spec, the key is the channel ID if present, otherwise use the channel index
-            output_chan_key = output_chan.id
-            if not output_chan_key:
-                # Find the output channel index
-                for idx, chan in enumerate(output_dev.channels):
-                    if chan is output_chan or (not chan.id and chan.label == output_chan.label):
-                        output_chan_key = str(idx)
-                        break
-                if not output_chan_key:
-                    error_msg = f"Could not determine output channel key for {output_chan.label}"
-                    logger.error(error_msg)
-                    ErrorLog().add_error(error_msg)
-                    return
-            
-            logger.info(f"Mapping output {output_dev.id}/{output_chan_key} (label: {output_chan.label}) to input {input_dev.id} channel index {input_channel_index} (label: {input_chan.label})")
-            
-            # Prepare the activation request according to IS-08 spec
-            # Use immediate activation with the output-to-input channel mapping
-            # Strip trailing slashes from device IDs
-            output_dev_id_clean = output_dev.id.rstrip('/')
-            input_dev_id_clean = input_dev.id.rstrip('/')
-            
-            activation_data = {
-                "activation": {
-                    "mode": "activate_immediate"
-                },
-                "action:": { # note the extra ':' here is intentional as per IS-08 spec
-                    output_dev_id_clean: {
-                        output_chan_key: {
-                            "input": input_dev_id_clean,
-                            "channel_index": input_channel_index
-                        }
-                    }
-                }
-            }
-            
-            async with aiohttp.ClientSession() as session:
-                # POST request to /map/activations for immediate activation
-                async with session.post(activations_url, json=activation_data) as response:
-                    if response.status in [200, 202]:
-                        logger.info(f"Successfully mapped output channel {output_chan.label} to input channel {input_chan.label}")
-                        # Refresh the channel data
-                        await self.fetch_device_channels(sender_node, sender_device)
-                    else:
-                        error_text = await response.text()
-                        error_msg = f"Failed to set channel mapping: {response.status} - {error_text}: tried to post: {activation_data}"
-                        logger.error(error_msg)
-                        ErrorLog().add_error(error_msg)
-        except Exception as e:
-            error_msg = f"Error connecting channel mapping: {e}"
-            logger.error(error_msg)
-            ErrorLog().add_error(error_msg, exception=e, traceback_str=traceback.format_exc())
+        await connect_channel_mapping(
+            sender_node,
+            sender_device,
+            output_dev,
+            output_chan,
+            receiver_node,
+            receiver_device,
+            input_dev,
+            input_chan,
+            fetch_device_channels_callback=self.fetch_device_channels,
+        )
 
     async def disconnect_channel_mapping(self, sender_node: NMOS_Node, sender_device: NMOS_Device,
                                         output_dev: OutputDevice, output_chan: OutputChannel):
         """Disconnect an output channel mapping using IS-08 API"""
-        try:
-            # Build the IS-08 channel mapping API URL for activations
-            activations_url = f"{sender_node.channelmapping_url}/map/activations"
-            
-            # Find the output channel key (ID or index as string)
-            output_chan_key = output_chan.id
-            if not output_chan_key:
-                # Find the output channel index
-                for idx, chan in enumerate(output_dev.channels):
-                    if chan is output_chan or (not chan.id and chan.label == output_chan.label):
-                        output_chan_key = str(idx)
-                        break
-                if not output_chan_key:
-                    error_msg = f"Could not determine output channel key for {output_chan.label}"
-                    logger.error(error_msg)
-                    ErrorLog().add_error(error_msg)
-                    return
-            
-            # Strip trailing slashes from device IDs
-            output_dev_id_clean = output_dev.id.rstrip('/')
-            
-            # Prepare the activation request to clear the mapping
-            # Setting input to null clears the mapping
-            activation_data = {
-                "activation": {
-                    "mode": "activate_immediate"
-                },
-                "action:": {  # note the extra ':' here is intentional as per IS-08 spec
-                    output_dev_id_clean: {
-                        output_chan_key: {
-                            "input": None,
-                            "channel_index": None
-                        }
-                    }
-                }
-            }
-            
-            async with aiohttp.ClientSession() as session:
-                # POST request to /map/activations for immediate activation
-                async with session.post(activations_url, json=activation_data) as response:
-                    if response.status in [200, 202]:
-                        logger.info(f"Successfully cleared mapping for output channel {output_chan.label}")
-                        # Refresh the channel data
-                        await self.fetch_device_channels(sender_node, sender_device)
-                    else:
-                        error_text = await response.text()
-                        error_msg = f"Failed to clear channel mapping: {response.status} - {error_text}"
-                        logger.error(error_msg)
-                        ErrorLog().add_error(error_msg)
-        except Exception as e:
-            error_msg = f"Error disconnecting channel mapping: {e}"
-            logger.error(error_msg)
-            ErrorLog().add_error(error_msg, exception=e, traceback_str=traceback.format_exc())
+        await disconnect_channel_mapping(
+            sender_node,
+            sender_device,
+            output_dev,
+            output_chan,
+            fetch_device_channels_callback=self.fetch_device_channels,
+        )
 
     async def _fetch_is08_resources(
         self,
