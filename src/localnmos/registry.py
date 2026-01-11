@@ -179,8 +179,10 @@ class NMOSServiceListener(ServiceListener):
             devices=devices
         )
 
+        # Track the node
         self.devices[info.name] = node
 
+        # Notify if this is a new node being added (not just updated)
         if added and self.on_node_added:
             self.on_node_added(node)
 
@@ -265,6 +267,7 @@ class NMOSRegistry:
     async def disconnect_sender_from_receiver(self, sender_id: str, receiver_id: str):
         """Disconnect sender from receiver using IS-05 API"""
         pass
+
 
     async def connect_channel_mapping(self, sender_node: NMOS_Node, sender_device: NMOS_Device,
                                      output_dev: OutputDevice, output_chan: OutputChannel,

@@ -23,6 +23,7 @@ test_sources = [
 requires = [
     "zeroconf>=0.132.0",
     "aiohttp>=3.9.0",
+    "netifaces>=0.11.0",
 ]
 test_requires = [
     "pytest",
