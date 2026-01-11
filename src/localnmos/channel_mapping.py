@@ -620,8 +620,336 @@ async def disconnect_channel_mapping(
     sender_device: NMOS_Device,
     output_dev: OutputDevice,
     output_chan: OutputChannel,
+    receiver_node: NMOS_Node,
+    receiver_device: NMOS_Device,
+    input_dev: InputDevice,
+    input_chan: InputChannel,
     fetch_device_channels_callback=None,
 ):
+    """Disconnect channel mapping, mirroring the connection logic
+    
+    Args:
+        sender_node: The NMOS node containing the output device
+        sender_device: The NMOS device with the output
+        output_dev: The output device
+        output_chan: The output channel to disconnect
+        receiver_node: The NMOS node containing the input device
+        receiver_device: The NMOS device with the input
+        input_dev: The input device
+        input_chan: The input channel
+        fetch_device_channels_callback: Optional callback to refresh channel data after disconnection
+    """
+    if sender_node == receiver_node:
+        # Same node, use local IS-08 to clear mapping
+        await is_08_disconnect_channel_mapping(
+            sender_node,
+            sender_device,
+            output_dev,
+            output_chan,
+            receiver_node,
+            receiver_device,
+            input_dev,
+            input_chan,
+            fetch_device_channels_callback,
+        )
+        return
+    
+    if output_chan == None and input_chan == None:
+        # No specific channels, disconnect IS-05 connection
+        await is_05_disconnect_devices(
+            sender_node,
+            sender_device,
+            receiver_node,
+            receiver_device,
+        )
+        return
+    
+    # Different nodes with channel-specific disconnection
+    if output_chan != None and input_chan == None:
+        # Clear mapping on sender side only
+        await is_05_and_is_08_sender_channel_disconnect(
+            sender_node,
+            sender_device,
+            output_dev,
+            output_chan,
+            receiver_node,
+            receiver_device,
+            fetch_device_channels_callback,
+        )
+        return
+    
+    if output_chan == None and input_chan != None:
+        # Clear mapping on receiver side only
+        await is_05_and_is_08_receiver_channel_disconnect(
+            sender_node,
+            sender_device,
+            receiver_node,
+            receiver_device,
+            input_dev,
+            input_chan,
+            fetch_device_channels_callback,
+        )
+        return
+    
+    if output_chan != None and input_chan != None:
+        # Clear mappings on both sides
+        await is_05_and_is_08_disconnect_channel_mapping(
+            sender_node,
+            sender_device,
+            output_dev,
+            output_chan,
+            receiver_node,
+            receiver_device,
+            input_dev,
+            input_chan,
+            fetch_device_channels_callback,
+        )
+        return
+    
+    assert False, "Unreachable code in disconnect_channel_mapping"
+
+
+async def is_05_disconnect_devices(
+    sender_node: NMOS_Node,
+    sender_device: NMOS_Device,
+    receiver_node: NMOS_Node,
+    receiver_device: NMOS_Device,
+):
+    """
+    Disconnect sender from receiver using IS-05 Connection Management API.
+    
+    Args:
+        sender_node: The NMOS node containing the sender
+        sender_device: The sender device to disconnect
+        receiver_node: The NMOS node containing the receiver
+        receiver_device: The receiver device to disconnect from
+    """
+    try:
+        # Build IS-05 connection API URLs
+        sender_connection_url = f"{sender_node.connection_url}/single/senders/{sender_device.device_id}"
+        receiver_connection_url = f"{receiver_node.connection_url}/single/receivers/{receiver_device.device_id}"
+        
+        logger.info(f"Disconnecting sender {sender_device.device_id} from receiver {receiver_device.device_id} using IS-05")
+        
+        async with aiohttp.ClientSession() as session:
+            # Disable the sender
+            sender_patch_data = {
+                "master_enable": False,
+                "activation": {"mode": "activate_immediate"},
+            }
+            
+            async with session.patch(f"{sender_connection_url}/staged", json=sender_patch_data) as response:
+                if response.status not in [200, 202]:
+                    error_text = await response.text()
+                    error_msg = f"Failed to disable sender: {response.status} - {error_text}"
+                    logger.error(error_msg)
+                    ErrorLog().add_error(error_msg)
+                    return
+            
+            # Disable the receiver
+            receiver_patch_data = {
+                "master_enable": False,
+                "activation": {"mode": "activate_immediate"},
+            }
+            
+            async with session.patch(f"{receiver_connection_url}/staged", json=receiver_patch_data) as response:
+                if response.status not in [200, 202]:
+                    error_text = await response.text()
+                    error_msg = f"Failed to disable receiver: {response.status} - {error_text}"
+                    logger.error(error_msg)
+                    ErrorLog().add_error(error_msg)
+                    return
+            
+            logger.info(f"Successfully disconnected sender {sender_device.device_id} from receiver {receiver_device.device_id}")
+            
+    except Exception as e:
+        error_msg = f"Error in IS-05 device disconnection: {e}"
+        logger.error(error_msg)
+        ErrorLog().add_error(error_msg, exception=e, traceback_str=traceback.format_exc())
+
+
+async def is_05_and_is_08_sender_channel_disconnect(
+    sender_node: NMOS_Node,
+    sender_device: NMOS_Device,
+    output_dev: OutputDevice,
+    output_chan: OutputChannel,
+    receiver_node: NMOS_Node,
+    receiver_device: NMOS_Device,
+    fetch_device_channels_callback=None,
+):
+    """
+    Clear IS-08 mapping on sender side for a specific output channel.
+    
+    Args:
+        sender_node: The NMOS node containing the sender
+        sender_device: The sender device
+        output_dev: The output device containing the channel
+        output_chan: The specific output channel to clear
+        receiver_node: The NMOS node containing the receiver
+        receiver_device: The receiver device
+        fetch_device_channels_callback: Optional callback to refresh channel data
+    """
+    try:
+        # Find RTP output device on sender node
+        rtp_output_dev_sender = await find_rtp_device(sender_node, sender_device, is_input=False)
+        if not rtp_output_dev_sender:
+            error_msg = f"Could not find RTP output device on sender node {sender_node.node_id}"
+            logger.error(error_msg)
+            ErrorLog().add_error(error_msg)
+            return
+        
+        # Clear mapping for the RTP channel on sender
+        if rtp_output_dev_sender.channels:
+            rtp_chan_sender = rtp_output_dev_sender.channels[0]
+            await is_08_disconnect_channel_mapping(
+                sender_node,
+                sender_device,
+                rtp_output_dev_sender,
+                rtp_chan_sender,
+                sender_node,
+                sender_device,
+                output_dev,
+                output_chan,
+                fetch_device_channels_callback,
+            )
+            logger.info(f"Cleared mapping for output channel {output_chan.label} on sender")
+            
+    except Exception as e:
+        error_msg = f"Error in IS-08 sender channel disconnect: {e}"
+        logger.error(error_msg)
+        ErrorLog().add_error(error_msg, exception=e, traceback_str=traceback.format_exc())
+
+
+async def is_05_and_is_08_receiver_channel_disconnect(
+    sender_node: NMOS_Node,
+    sender_device: NMOS_Device,
+    receiver_node: NMOS_Node,
+    receiver_device: NMOS_Device,
+    input_dev: InputDevice,
+    input_chan: InputChannel,
+    fetch_device_channels_callback=None,
+):
+    """
+    Clear IS-08 mapping on receiver side for a specific input channel.
+    
+    Args:
+        sender_node: The NMOS node containing the sender
+        sender_device: The sender device
+        receiver_node: The NMOS node containing the receiver
+        receiver_device: The receiver device
+        input_dev: The input device containing the channel
+        input_chan: The specific input channel to clear
+        fetch_device_channels_callback: Optional callback to refresh channel data
+    """
+    try:
+        # Find RTP output device on receiver node (for routing)
+        rtp_output_dev_receiver = await find_rtp_device(receiver_node, receiver_device, is_input=False)
+        
+        if rtp_output_dev_receiver and rtp_output_dev_receiver.channels:
+            rtp_output_chan = rtp_output_dev_receiver.channels[0]
+            await is_08_disconnect_channel_mapping(
+                receiver_node,
+                receiver_device,
+                rtp_output_dev_receiver,
+                rtp_output_chan,
+                receiver_node,
+                receiver_device,
+                input_dev,
+                input_chan,
+                fetch_device_channels_callback,
+            )
+            logger.info(f"Cleared mapping for input channel {input_chan.label} on receiver")
+        else:
+            error_msg = "No RTP output device/channels available on receiver"
+            logger.error(error_msg)
+            ErrorLog().add_error(error_msg)
+            
+    except Exception as e:
+        error_msg = f"Error in IS-08 receiver channel disconnect: {e}"
+        logger.error(error_msg)
+        ErrorLog().add_error(error_msg, exception=e, traceback_str=traceback.format_exc())
+
+
+async def is_05_and_is_08_disconnect_channel_mapping(
+    sender_node: NMOS_Node,
+    sender_device: NMOS_Device,
+    output_dev: OutputDevice,
+    output_chan: OutputChannel,
+    receiver_node: NMOS_Node,
+    receiver_device: NMOS_Device,
+    input_dev: InputDevice,
+    input_chan: InputChannel,
+    fetch_device_channels_callback=None,
+):
+    """
+    Clear IS-08 mappings on both sender and receiver sides.
+    
+    Args:
+        sender_node: The NMOS node containing the sender
+        sender_device: The sender device
+        output_dev: The output device
+        output_chan: The output channel to clear
+        receiver_node: The NMOS node containing the receiver
+        receiver_device: The receiver device
+        input_dev: The input device
+        input_chan: The input channel to clear
+        fetch_device_channels_callback: Optional callback to refresh channel data
+    """
+    try:
+        # Clear mapping on sender side
+        rtp_output_dev_sender = await find_rtp_device(sender_node, sender_device, is_input=False)
+        if rtp_output_dev_sender and rtp_output_dev_sender.channels:
+            rtp_chan_sender = rtp_output_dev_sender.channels[0]
+            await is_08_disconnect_channel_mapping(
+                sender_node,
+                sender_device,
+                rtp_output_dev_sender,
+                rtp_chan_sender,
+                sender_node,
+                sender_device,
+                output_dev,
+                output_chan,
+                fetch_device_channels_callback,
+            )
+            logger.info(f"Cleared mapping for output channel {output_chan.label} on sender")
+        
+        # Clear mapping on receiver side
+        rtp_output_dev_receiver = await find_rtp_device(receiver_node, receiver_device, is_input=False)
+        if rtp_output_dev_receiver and rtp_output_dev_receiver.channels:
+            rtp_output_chan = rtp_output_dev_receiver.channels[0]
+            await is_08_disconnect_channel_mapping(
+                receiver_node,
+                receiver_device,
+                rtp_output_dev_receiver,
+                rtp_output_chan,
+                receiver_node,
+                receiver_device,
+                input_dev,
+                input_chan,
+                fetch_device_channels_callback,
+            )
+            logger.info(f"Cleared mapping for input channel {input_chan.label} on receiver")
+        
+        logger.info(f"Cross-node channel disconnect complete: {output_chan.label} -> {input_chan.label}")
+        
+    except Exception as e:
+        error_msg = f"Error in IS-05/IS-08 cross-node disconnect: {e}"
+        logger.error(error_msg)
+        ErrorLog().add_error(error_msg, exception=e, traceback_str=traceback.format_exc())
+
+
+async def is_08_disconnect_channel_mapping(   
+    sender_node: NMOS_Node,
+    sender_device: NMOS_Device,
+    output_dev: OutputDevice,
+    output_chan: OutputChannel,
+    receiver_node: NMOS_Node,
+    receiver_device: NMOS_Device,
+    input_dev: InputDevice,
+    input_chan: InputChannel,
+    fetch_device_channels_callback=None,
+):
+
     """Disconnect an output channel mapping using IS-08 API
     
     Args:
@@ -629,6 +957,10 @@ async def disconnect_channel_mapping(
         sender_device: The NMOS device with the output
         output_dev: The output device
         output_chan: The output channel to disconnect
+        receiver_node: The NMOS node containing the input device (for symmetry with connect)
+        receiver_device: The NMOS device with the input (for symmetry with connect)
+        input_dev: The input device (for symmetry with connect)
+        input_chan: The input channel (for symmetry with connect)
         fetch_device_channels_callback: Optional callback to refresh channel data after disconnection
     """
     try:
