@@ -178,8 +178,8 @@ class RoutingMatrixCanvas:
                 # Draw the text at the origin (after transformation)
                 text_filler.write_text(
                     label,
-                    0,
-                    0,
+                    100,
+                    100,
                     font=toga.Font(family="sans-serif", size=self.scaled_font_size(8))
                 )
                 
