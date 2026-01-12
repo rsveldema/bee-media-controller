@@ -166,28 +166,24 @@ class RoutingMatrixCanvas:
             # Build label with node, device, and receiver names
             label = f"{node.get_name()} / {device.get_name()} / {receiver.get_name()}"
             
-            # Draw text at 45 degrees
-            with self.canvas.Fill(color=rgb(0, 0, 0)) as text_filler:
-                # Translate to the position where we want to draw
-                self.canvas.context.translate(x + self.cell_width / 2, self.margin_top - 10)
+            # Use a sub-context for isolated transformations
+            with self.canvas.context.Context():
+                # Move to the base of where the rotated text should start
+                self.canvas.context.translate(x + self.cell_width / 2, self.margin_top - 5)
                 
-                # Rotate by -45 degrees (negative because y-axis is inverted)
-                # -45 degrees = -0.785398 radians
+                # Rotate -45 degrees
                 self.canvas.context.rotate(-0.785398)
                 
-                # Draw the text at the origin (after transformation)
-                text_filler.write_text(
-                    label,
-                    100,
-                    100,
-                    font=toga.Font(family="sans-serif", size=self.scaled_font_size(8))
-                )
-                
-                # Reverse the rotation
+                # Draw the text
+                with self.canvas.Fill(color=rgb(0, 0, 0)) as text_filler:
+                    text_filler.write_text(
+                        label,
+                        0,
+                        0,
+                        font=toga.Font(family="sans-serif", size=self.scaled_font_size(8))
+                    )
                 self.canvas.context.rotate(0.785398)
-                
-                # Reverse the translation
-                self.canvas.context.translate(-(x + self.cell_width / 2), -(self.margin_top - 10))
+                self.canvas.context.translate(-(x + self.cell_width / 2), -(self.margin_top - 5))
             
             x += self.cell_width
     
