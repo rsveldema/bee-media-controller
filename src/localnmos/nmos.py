@@ -138,6 +138,7 @@ class NMOS_Node:
     version: str = "v1.3"
     api_ver: str = "v1.3"
     channel_mapping_api_ver: str = "v1.0"
+    icon: Any = None  # Icon for use in UI widgets like DetailedList
 
 
     def __post_init__(self):

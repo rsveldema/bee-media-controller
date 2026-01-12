@@ -149,14 +149,23 @@ class RoutingMatrixCanvas:
                 font=toga.Font(family="sans-serif", size=self.scaled_font_size(14))
             )
         
-        # Draw "Senders" on the left with dark color
-        with self.canvas.Fill(color=rgb(0, 0, 0)) as text_filler:
-            text_filler.write_text(
-                "Senders",
-                10,
-                self.margin_top + 20,
-                font=toga.Font(family="sans-serif", size=self.scaled_font_size(14))
-            )
+        # Draw "Senders" on the left rotated 90 degrees (vertical, reading upward)
+        with self.canvas.context.Context():
+            # Move to position where we want the text
+            self.canvas.context.translate(30, self.margin_top + 60)
+            
+            # Rotate -90 degrees (π/2 radians counterclockwise, which is -π/2 in canvas coordinates)
+            self.canvas.context.rotate(-1.5708)  # -90 degrees = -π/2 radians
+            
+            with self.canvas.Fill(color=rgb(0, 0, 0)) as text_filler:
+                text_filler.write_text(
+                    "Senders",
+                    0,
+                    0,
+                    font=toga.Font(family="sans-serif", size=self.scaled_font_size(14))
+                )
+            self.canvas.context.rotate(1.5708)  # Rotate back
+            self.canvas.context.translate(-30, -(self.margin_top + 60))
     
     def _draw_column_headers(self, senders, receivers):
         """Draw receiver column headers at the top rotated 45 degrees"""

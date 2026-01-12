@@ -19,8 +19,9 @@ from toga.app import AppStartupMethod, OnExitHandler, OnRunningHandler
 from toga.constants import Baseline
 from toga.fonts import SANS_SERIF
 from toga.colors import WHITE, rgb
-from toga.sources import ListSource
+from toga.sources import ListSource, ListSourceT, Row, Source
 
+from localnmos import logging_utils
 from localnmos.ui_model import (
     UI_NMOS_ConnectionMatrix,
     UI_NMOS_Row_Node,
@@ -34,6 +35,8 @@ from .matrix_canvas import RoutingMatrixCanvas
 
 # Build date - automatically set when the module is imported
 BUILD_DATE = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+logger = logging_utils.create_logger("localnmos.app")
 
 
 class LocalNMOS(toga.App):
@@ -312,7 +315,7 @@ class LocalNMOS(toga.App):
 
         nodes_box = toga.Box(direction=COLUMN, style=Pack(width=300))
         self.listbox = toga.DetailedList(
-            data=self.model.get_nodes(),
+            data=[],
             on_select=self.on_node_select,
             style=Pack(flex=1)
         )
@@ -351,8 +354,81 @@ class LocalNMOS(toga.App):
         self.loop.call_soon_threadsafe(self.sync_task, "Hi")
 
     async def on_node_select(self, widget):
-        """Handler for when a device is selected in the list"""
-        pass
+        """Handler for when a node is selected in the list"""
+        if not widget.selection:
+            return
+        
+        try:
+            # For DetailedList, widget.selection returns the NMOS_Node object directly
+            selected_nmos_node: NMOS_Node = widget.selection
+
+            logger.info(f"Node selected: {selected_nmos_node.name}")
+            
+            # Build detailed information about the node
+            details = []
+            details.append(f"Node: {selected_nmos_node.name}")
+            details.append(f"Node ID: {selected_nmos_node.node_id}")
+            details.append(f"Address: {selected_nmos_node.address}:{selected_nmos_node.port}")
+            details.append("")
+            
+            # Use the selected node directly (already has all the data)
+            details.append(f"Devices: {len(selected_nmos_node.devices)}")
+            for device in selected_nmos_node.devices:
+                        details.append(f"  • Device: {device.label} (ID: {device.device_id})")
+                        
+                        # Show sources
+                        if hasattr(device, 'sources') and device.sources:
+                            details.append(f"    Sources: {len(device.sources)}")
+                            for source in device.sources:
+                                if hasattr(source, 'source_id'):
+                                    details.append(f"      - {source.label} (ID: {source.source_id})")
+                        
+                        # Show senders
+                        if hasattr(device, 'senders') and device.senders:
+                            details.append(f"    Senders: {len(device.senders)}")
+                            for sender in device.senders:
+                                if hasattr(sender, 'sender_id'):
+                                    details.append(f"      - {sender.label} (ID: {sender.sender_id})")
+                        
+                        # Show receivers
+                        if hasattr(device, 'receivers') and device.receivers:
+                            details.append(f"    Receivers: {len(device.receivers)}")
+                            for receiver in device.receivers:
+                                if hasattr(receiver, 'receiver_id'):
+                                    details.append(f"      - {receiver.label} (ID: {receiver.receiver_id})")
+                        
+                        # Show channels (IS-08)
+                        if hasattr(device, 'is08_input_channels') and device.is08_input_channels:
+                            details.append(f"    Input Channels:")
+                            for chan_dev in device.is08_input_channels:
+                                details.append(f"      Input Device: {chan_dev.name}")
+                                for channel in chan_dev.channels:
+                                    details.append(f"        - Channel {channel.label} (ID: {channel.id})")
+                        
+                        if hasattr(device, 'is08_output_channels') and device.is08_output_channels:
+                            details.append(f"    Output Channels:")
+                            for chan_dev in device.is08_output_channels:
+                                details.append(f"      Output Device: {chan_dev.name}")
+                                for channel in chan_dev.channels:
+                                    mapped_info = ""
+                                    if channel.mapped_device:
+                                        mapped_info = f" → mapped to {channel.mapped_device.id}"
+                                    details.append(f"        - Channel {channel.label} (ID: {channel.id}){mapped_info}")
+                        
+                        details.append("")
+            
+            # Show the details in a dialog
+            await self.main_window.dialog(toga.InfoDialog(
+                f"Node Details: {selected_nmos_node.name}",
+                "\n".join(details)
+            ))
+        except Exception as e:
+            import traceback
+            # Show error dialog with details
+            await self.main_window.dialog(toga.ErrorDialog(
+                "Error",
+                f"Failed to show node details: {e}\n\n{traceback.format_exc()}"
+            ))
 
     def on_node_added(self, node: NMOS_Node):
         """Callback when an NMOS node is discovered"""
@@ -362,7 +438,10 @@ class LocalNMOS(toga.App):
     def _on_node_added_ui(self, node: NMOS_Node):
         """UI update for node added (runs on main thread)"""
         print(f"GUI - Node discovered: {node.name} at {node.address}:{node.port}")
-                
+        
+        # Refresh the listbox to show the new node
+        self.listbox.data = self.model.get_nodes()
+        
         # Redraw the matrix with the new node
         self.draw_routing_matrix()
 
@@ -375,8 +454,9 @@ class LocalNMOS(toga.App):
         """UI update for node removed (runs on main thread)"""
         print(f"node removed: {node.name}")
         
-       
-        self.listbox.refresh()
+        # Refresh the listbox to remove the node
+        self.listbox.data = self.model.get_nodes()
+        
         self.draw_routing_matrix()
 
     def on_device_added(self, node_id: str, device_id: str):
