@@ -8,6 +8,9 @@ from datetime import datetime
 from typing import List, Optional
 from dataclasses import dataclass
 
+from localnmos.logging_utils import create_logger
+
+logger = create_logger(__name__)
 
 @dataclass
 class ErrorEntry:
@@ -75,6 +78,8 @@ class ErrorLog:
         # Keep only the most recent errors
         if len(self._errors) > self._max_entries:
             self._errors = self._errors[-self._max_entries:]
+
+        logger.error(message)
     
     def get_last_error(self) -> Optional[ErrorEntry]:
         """Get the most recent error"""

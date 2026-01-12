@@ -20,6 +20,7 @@ from aiohttp.web_response import json_response
 from .nmos import InputChannel, InputDevice, NMOS_Device, NMOS_Node, OutputChannel, OutputDevice
 from .error_log import ErrorLog
 from .query_api import NMOSQueryAPI
+from .system_config import NMOSSystemConfig
 from .mdns_service import NMOSMDNSService
 from .node_discovery import register_node_from_health_update
 from .channel_mapping import connect_channel_mapping, disconnect_channel_mapping
@@ -146,6 +147,7 @@ class NMOSRegistry:
         self.registration_runner = None  # Runner for the HTTP server
         self.registration_port = 8080  # Port for registration service
         self.query_api: Optional[NMOSQueryAPI] = None  # Query API server instance
+        self.system_config: Optional[NMOSSystemConfig] = None  # System Configuration API server instance
         self.device_heartbeats: Dict[str, float] = {}  # Track last heartbeat time for each device
         self.heartbeat_timeout = 12.0  # Timeout in seconds (NMOS default is 12s)
         self.heartbeat_task = None  # Background task to check for expired registrations
@@ -486,6 +488,7 @@ class NMOSRegistry:
             # Start HTTP servers first, then advertise them via mDNS
             await self._start_registration_server()
             await self._start_query_server()
+            await self._start_system_config_server()
             
             # Now advertise the services via mDNS (for 1.3 clients)
             await self.mdns_service.register_service(self.NMOS_REGISTER_SERVICE, 8080, "Registration API")
@@ -493,6 +496,8 @@ class NMOSRegistry:
             await self.mdns_service.register_service(self.NMOS_REGISTRATION_SERVICE, 8080, "Registration API")
             # Advertise Query API
             await self.mdns_service.register_service(self.NMOS_QUERY_SERVICE, 8081, "Query API")
+            # Advertise System Configuration API
+            await self.mdns_service.register_service(self.NMOS_SYSTEM_SERVICE, 8082, "System API")
             
             # Start heartbeat monitoring
             self.heartbeat_task = asyncio.create_task(self._monitor_heartbeats())
@@ -525,6 +530,9 @@ class NMOSRegistry:
 
         # Stop HTTP Query API server
         await self._stop_query_server()
+
+        # Stop HTTP System Configuration API server
+        await self._stop_system_config_server()
 
         # Stop mDNS service
         if self.mdns_service:
@@ -589,6 +597,30 @@ class NMOSRegistry:
                 self.query_api = None
             except Exception as e:
                 error_msg = f"Failed to stop Query API server: {e}"
+                ErrorLog().add_error(error_msg, exception=e, traceback_str=traceback.format_exc())
+
+    async def _start_system_config_server(self):
+        """Start NMOS System Configuration API server (IS-09)"""
+        try:
+            self.system_config = NMOSSystemConfig(
+                zeroconf=self.zeroconf,
+                listen_ip=self.listen_ip,
+                port=8082,
+                service_type=self.NMOS_SYSTEM_SERVICE
+            )
+            await self.system_config.start()
+        except Exception as e:
+            error_msg = f"Failed to start System Configuration API server: {e}"
+            ErrorLog().add_error(error_msg, exception=e, traceback_str=traceback.format_exc())
+
+    async def _stop_system_config_server(self):
+        """Stop the HTTP System Configuration API server"""
+        if self.system_config:
+            try:
+                await self.system_config.stop()
+                self.system_config = None
+            except Exception as e:
+                error_msg = f"Failed to stop System Configuration API server: {e}"
                 ErrorLog().add_error(error_msg, exception=e, traceback_str=traceback.format_exc())
 
     async def _handle_health(self, request):
