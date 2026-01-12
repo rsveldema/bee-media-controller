@@ -21,7 +21,11 @@ from toga.fonts import SANS_SERIF
 from toga.colors import WHITE, rgb
 from toga.sources import ListSource
 
-from localnmos.ui_model import UI_NMOS_ConnectionMatrix
+from localnmos.ui_model import (
+    UI_NMOS_ConnectionMatrix,
+    UI_NMOS_Row_Node,
+    UI_NMOS_Column_Node,
+)
 
 from .registry import NMOSRegistry
 from .nmos import NMOS_Node
@@ -83,7 +87,7 @@ class LocalNMOS(toga.App):
 
 
     def draw_routing_matrix(self):
-        pass
+        self.matrix_canvas.draw()
 
     def refresh_matrix_command(self, widget):
         """Handler for the Refresh Routing Matrix menu command"""
@@ -323,7 +327,7 @@ class LocalNMOS(toga.App):
         nodes_box.add(self.error_status_label)
 
         self.canvas = toga.Canvas(
-            flex=1, on_resize=self.on_resize, on_press=self.on_press, on_drag=self.on_mouse_move
+            flex=1, on_resize=self.on_resize, on_press=self.on_press
         )
 
         # Initialize the matrix canvas drawing class
@@ -358,6 +362,9 @@ class LocalNMOS(toga.App):
     def _on_node_added_ui(self, node: NMOS_Node):
         """UI update for node added (runs on main thread)"""
         print(f"GUI - Node discovered: {node.name} at {node.address}:{node.port}")
+                
+        # Redraw the matrix with the new node
+        self.draw_routing_matrix()
 
     def on_node_removed(self, node: NMOS_Node):
         """Callback when an NMOS node is removed from the network"""
@@ -367,7 +374,8 @@ class LocalNMOS(toga.App):
     def _on_node_removed_ui(self, node: NMOS_Node):
         """UI update for node removed (runs on main thread)"""
         print(f"node removed: {node.name}")
-        self.model.remove_node(node.node_id)
+        
+       
         self.listbox.refresh()
         self.draw_routing_matrix()
 
@@ -378,15 +386,18 @@ class LocalNMOS(toga.App):
     def _on_device_added_ui(self, node_id: str, device_id: str):
         """UI update for device added (runs on main thread)"""
         print(f"Device added: {device_id} to node {node_id}")
+        self.draw_routing_matrix()
 
 
     def on_sender_added(self, node_id: str, device_id: str, sender_id: str):
         """Callback when a sender is registered to a device"""
-        pass
+        print(f"Sender added: {sender_id} to device {device_id} on node {node_id}")
+        self.loop.call_soon_threadsafe(self.draw_routing_matrix)
 
     def on_receiver_added(self, node_id: str, device_id: str, receiver_id: str):
         """Callback when a receiver is registered to a device"""
-        pass
+        print(f"Receiver added: {receiver_id} to device {device_id} on node {node_id}")
+        self.loop.call_soon_threadsafe(self.draw_routing_matrix)
 
     def on_channel_updated(self, node_id: str, device_id: str):
         """Callback when device channels are updated"""
@@ -395,7 +406,7 @@ class LocalNMOS(toga.App):
     def _on_channel_updated_ui(self, node_id: str, device_id: str):
         """UI update for channel changes (runs on main thread)"""
         print(f"Channels updated for device {device_id} on node {node_id}")
-        
+        self.draw_routing_matrix()
 
     def sync_task(self, arg: str):
         print(f"running sync task: {arg}")
@@ -443,6 +454,7 @@ class LocalNMOS(toga.App):
             channel_updated_callback=self.on_channel_updated,
         )
         await self.registry.start()
+        self.model.nodes = self.registry.nodes
         print("NMOS Registry started - discovering nodes via MDNS...")
 
     def on_resize(self, widget, width, height, **kwargs):
@@ -451,13 +463,7 @@ class LocalNMOS(toga.App):
             # Calculate matrix dimensions
 
 
-            self.draw_routing_matrix()
-    
-    def on_mouse_move(self, widget, x, y, dx, dy, **kwargs):
-        """Handle mouse movement to show tooltip for channel labels"""
-        if not hasattr(self, 'matrix_canvas'):
-            return
-        
+            self.draw_routing_matrix()        
 
     async def on_press(self, widget, x, y, **kwargs):
         """When clicking on the routing matrix at (x, y), toggle the channel mapping between output and input channels.
