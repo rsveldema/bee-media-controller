@@ -356,12 +356,14 @@ class LocalNMOS(toga.App):
     async def on_node_select(self, widget):
         """Handler for when a node is selected in the list"""
         if not widget.selection:
+            logger.debug("on_node_select called but no selection")
             return
         
         try:
-            # For DetailedList, widget.selection returns the NMOS_Node object directly
-            selected_nmos_node: NMOS_Node = widget.selection
-
+            # For DetailedList, widget.selection returns a Row object
+            # The actual NMOS_Node is in the 'title' attribute of the Row
+            selected_nmos_node: NMOS_Node = widget.selection.title
+            
             logger.info(f"Node selected: {selected_nmos_node.name}")
             
             # Build detailed information about the node

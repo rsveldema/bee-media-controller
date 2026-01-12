@@ -5,7 +5,7 @@ This module defines the core NMOS data structures for devices and nodes.
 """
 
 from typing import List, Dict, Any
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass
@@ -133,8 +133,8 @@ class NMOS_Node:
     address: str
     port: int
     service_type: str
-    properties: Dict[str, Any]
-    devices: List[NMOS_Device]
+    properties: Dict[str, Any] = field(default_factory=dict)
+    devices: List[NMOS_Device] = None
     version: str = "v1.3"
     api_ver: str = "v1.3"
     channel_mapping_api_ver: str = "v1.0"
@@ -146,6 +146,10 @@ class NMOS_Node:
             self.devices = []
         if self.properties is None:
             self.properties = {}
+
+    def __str__(self) -> str:
+        """Return a clean string representation for UI display"""
+        return f"{self.name} ({self.address}:{self.port})"
 
     @property
     def base_url(self) -> str:
