@@ -216,11 +216,14 @@ async def fetch_and_add_senders(node: NMOS_Node, session: aiohttp.ClientSession,
                     )
                     
                     # Find the device this sender belongs to and add it
+                    found = False
                     for device in node.devices:
                         if device.device_id == device_id:
                             device.senders.append(nmos_sender)
                             logger.info(f"Added sender {sender_id} ({label}) to device {device_id}")
+                            found = True
                             break
+                    assert found, f"Device {device_id} not found for sender {sender_id}"
             else:
                 logger.warning(f"Failed to fetch senders from {senders_url}: HTTP {response.status}")
     except Exception as e:
@@ -450,6 +453,14 @@ async def register_node_from_health_update(
         on_node_added_callback: Callback to invoke when node is added
     """
     logger.info(f"Node {node_id} not registered yet, creating registration from health update")
+    
+    # Check if this is an infrastructure node (query or system API) - skip these
+    if node_id in nodes:
+        existing_node = nodes[node_id]
+        if existing_node.service_type in ('_nmos-query._tcp.local.', '_nmos-system._tcp.local.'):
+            logger.info(f"Skipping infrastructure node {node_id} (service_type={existing_node.service_type})")
+            return
+    
     client_host = request.remote
     
     # Create a basic node registration

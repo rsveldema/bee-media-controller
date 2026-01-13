@@ -98,6 +98,7 @@ class UI_NMOS_Row_Devices:
         ret = []
         if self.device:
             for sender in self.device.senders:
+                assert sender is not None
                 ret.append(UI_NMOS_Row_Senders(sender, self.device))
         
         # If no senders, add a dummy sender so the device still appears

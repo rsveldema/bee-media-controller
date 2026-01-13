@@ -831,51 +831,47 @@ class NMOSRegistry:
         return None
 
     def _handle_registration_sender(self, request, resource_data: Dict):
-        parent_device_id = resource_data.get('id', None)
-        sender_device_id = resource_data.get('device_id', None)
-        flow_id = resource_data.get('flow_id', None)
-        subscriptions = resource_data.get('subscription', None)
+        sender_id = resource_data.get('id', None)
+        device_id = resource_data.get('device_id', None)
+        label = resource_data.get('label', '')
+        description = resource_data.get('description', '')
+        flow_id = resource_data.get('flow_id', '')
+        transport = resource_data.get('transport', '')
+        manifest_href = resource_data.get('manifest_href', '')
 
-        if parent_device_id is None:
-            return self.error_json_response({'status': 'parent id not found'}, status=400)
-        if sender_device_id is None:
-            return self.error_json_response({'status': 'parent id not found'}, status=400)
-        if sender_device_id == parent_device_id:
-            return self.error_json_response({'status': 'parent id == sender parent id'}, status=500)
+        if sender_id is None:
+            return self.error_json_response({'status': 'missing sender id'}, status=400)
+        if device_id is None:
+            return self.error_json_response({'status': 'missing device id'}, status=400)
 
-        parent = self.find_device(sender_device_id)
-        if parent is None:
-            return self.error_json_response({'status': f'sender-registration: bad device parent ID: {sender_device_id}'}, status=400)
+        parent_device = self.find_device(device_id)
+        if parent_device is None:
+            return self.error_json_response({'status': f'sender-registration: bad device ID: {device_id}'}, status=400)
 
         # Check if sender already exists in this device
-        for existing_sender in parent.senders:
-            if hasattr(existing_sender, 'device_id') and existing_sender.device_id == parent_device_id:
-                logger.info(f"Sender {parent_device_id} already registered in device {sender_device_id}, ignoring duplicate")
+        for existing_sender in parent_device.senders:
+            if existing_sender.sender_id == sender_id:
+                logger.info(f"Sender {sender_id} already registered in device {device_id}, ignoring duplicate")
                 return json_response({'status': 'already-registered'}, status=200)
 
-        if subscriptions is not None:
-            receiver_id = subscriptions.get("receiver_id", "missing")
-            if receiver_id == "missing":
-                return self.error_json_response({'status': 'missing receiver ID'}, status=400)
+        # Create NMOS_Sender object
+        nmos_sender = nmos.NMOS_Sender(
+            sender_id=sender_id,
+            label=label,
+            description=description,
+            flow_id=flow_id,
+            transport=transport,
+            device_id=device_id,
+            manifest_href=manifest_href
+        )
 
-            if receiver_id is not None:
-                receiver = self.find_device(receiver_id)
-                if receiver is None:
-                    return self.error_json_response({'status': f'bad receiver ID:{receiver_id}'}, status=400)
-
-                if self.debug_registry:
-                    logger.info(f"linked sender node {parent.node_id} to receiver {receiver.device_id}")
-                parent.senders.append(receiver)
-            else:
-                if self.debug_registry:
-                    logger.info("no subscriptions for sender yet")
-        else:
-            if self.debug_registry:
-                logger.info("no subscriptions for sender")
+        # Add sender to the device
+        parent_device.senders.append(nmos_sender)
+        logger.info(f"Added sender {sender_id} ({label}) to device {device_id}")
 
         # Notify UI about sender addition
         if self.sender_added_callback:
-            self._call_callback_with_params(self.sender_added_callback, parent.node_id, sender_device_id, parent_device_id)
+            self._call_callback_with_params(self.sender_added_callback, parent_device.node_id, device_id, sender_id)
 
         return json_response({'status': 'registered'}, status=201)
 
@@ -1150,6 +1146,11 @@ class NMOSRegistry:
 
     def _on_node_added(self, node: NMOS_Node):
         """Internal callback when a device is added"""
+        # Filter out infrastructure nodes (query and system APIs)
+        if node.service_type in ('_nmos-query._tcp.local.', '_nmos-system._tcp.local.'):
+            logger.info(f"Ignoring infrastructure node: {node.name} (service_type={node.service_type})")
+            return
+        
         logger.info(
             f"Device discovered: {node.name} at {node.address}:{node.port}"
         )
