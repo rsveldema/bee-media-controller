@@ -338,9 +338,17 @@ class LocalNMOS(toga.App):
 
         self.draw_routing_matrix()
 
+        # Wrap canvas in a ScrollContainer to make it scrollable
+        scroll_container = toga.ScrollContainer(
+            content=self.canvas,
+            horizontal=True,
+            vertical=True,
+            style=Pack(flex=1)
+        )
+
         main_box.add(nodes_box)
         main_box.add(toga.Divider())
-        main_box.add(self.canvas)
+        main_box.add(scroll_container)
 
         # Add toolbar and main content to container
         container_box.add(toolbar)

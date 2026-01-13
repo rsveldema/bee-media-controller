@@ -9,6 +9,7 @@ import argparse
 import asyncio
 import inspect
 import logging
+from platform import node
 import sys
 import time
 import traceback
@@ -22,8 +23,10 @@ from .error_log import ErrorLog
 from .query_api import NMOSQueryAPI
 from .system_config import NMOSSystemConfig
 from .mdns_service import NMOSMDNSService
+from .node_discovery import assign_temporary_channels_to_devices
 from .node_discovery import register_node_from_health_update
 from .channel_mapping import connect_channel_mapping, disconnect_channel_mapping
+from localnmos import nmos
 
 try:
     from zeroconf import Zeroconf, ServiceInfo
@@ -202,13 +205,13 @@ class NMOSRegistry:
 
         async def _fetch_details(resource_id: str) -> Optional[Dict[str, Any]]:
             """Helper to fetch all details for one IS-08 resource concurrently."""
-            base_url = f"{node.channelmapping_url}/{resource_type}/{resource_id}"
+            base_url = f"{node.channelmapping_url}/{resource_type}/{resource_id.rstrip('/')}"
             try:
-                requests = {res.strip('/'): session.get(f"{base_url}{res.strip('/')}") for res in sub_resources}
+                requests = {res.strip('/'): session.get(f"{base_url}{res}") for res in sub_resources}
                 responses = await asyncio.gather(*requests.values(), return_exceptions=True)
 
                 for res in sub_resources:
-                    logger.info(f"=====> trying to read: {base_url}{res.strip('/')}")
+                    logger.info(f"=====> trying to read: {base_url}{res}")
 
                 results: Dict[str, Any] = {}
                 for i, key in enumerate(requests.keys()):
@@ -269,19 +272,47 @@ class NMOSRegistry:
 
         def constructor(input_id: str, details: Dict[str, Any]) -> InputDevice:
             logger.info(f"Input {input_id} channels data: {details.get('channels', [])}")
+            channels_data = details.get("channels", [])
+            # Validate that channels is a list of dicts, not a dict or other type
+            if not isinstance(channels_data, list):
+                logger.warning(f"Input {input_id} channels data is not a list: {type(channels_data)}")
+                channels_data = []
             input_channels = [
                 InputChannel(id=ch.get("id", ""), label=ch.get("label", ""))
-                for ch in details.get("channels", [])
+                for ch in channels_data
+                if isinstance(ch, dict)  # Skip non-dict items
             ]
-            logger.info(f"retrieved input device {details.get('properties', {}).get('name', '')}: {input_channels}")
+            
+            # Safely extract properties, validating each level
+            properties = details.get("properties", {})
+            if not isinstance(properties, dict):
+                properties = {}
+            name = properties.get("name", "")
+            description = properties.get("description", "")
+            
+            # Safely extract parent info
+            parent = details.get("parent", {})
+            if not isinstance(parent, dict):
+                parent = {}
+            parent_id = parent.get("id", "")
+            parent_type = parent.get("type", "")
+            
+            # Safely extract caps
+            caps = details.get("caps", {})
+            if not isinstance(caps, dict):
+                caps = {}
+            reordering = caps.get("reordering", False)
+            block_size = caps.get("block_size", 0)
+            
+            logger.info(f"retrieved input device {name}: {input_channels}, parent_id = {parent_id}, parent_type = {parent_type}")
             return InputDevice(
                 id=input_id,
-                name=details.get("properties", {}).get("name", ""),
-                description=details.get("properties", {}).get("description", ""),
-                reordering=details.get("caps", {}).get("reordering", False),
-                block_size=details.get("caps", {}).get("block_size", 0),
-                parent_id=details.get("parent", {}).get("id", ""),
-                parent_type=details.get("parent", {}).get("type", ""),
+                name=name,
+                description=description,
+                reordering=reordering,
+                block_size=block_size,
+                parent_id=parent_id,
+                parent_type=parent_type,
                 channels=input_channels,
             )
 
@@ -298,17 +329,44 @@ class NMOSRegistry:
 
         def constructor(output_id: str, details: Dict[str, Any]) -> OutputDevice:
             logger.info(f"Output {output_id} channels data: {details.get('channels', [])}")
+            channels_data = details.get("channels", [])
+            # Validate that channels is a list of dicts, not a dict or other type
+            if not isinstance(channels_data, list):
+                logger.warning(f"Output {output_id} channels data is not a list: {type(channels_data)}")
+                channels_data = []
             output_channels = [
                 OutputChannel(id=ch.get("id", ""), label=ch.get("label", ""), mapped_device=None, mapped_channel=None)
-                for ch in details.get("channels", [])
+                for ch in channels_data
+                if isinstance(ch, dict)  # Skip non-dict items
             ]
-            logger.info(f"retrieved output device {details.get("properties", {}).get("name", "")}: {output_channels}")
+            
+            # Safely extract properties, validating each level
+            properties = details.get("properties", {})
+            if not isinstance(properties, dict):
+                properties = {}
+            name = properties.get("name", "")
+            description = properties.get("description", "")
+            
+            # Safely extract caps
+            caps = details.get("caps", {})
+            if not isinstance(caps, dict):
+                caps = {}
+            routable_inputs = caps.get("routable_inputs", [])
+            if not isinstance(routable_inputs, list):
+                routable_inputs = []
+            
+            # Source ID is typically a string, not a dict
+            source_id = details.get("sourceid", "")
+            if not isinstance(source_id, str):
+                source_id = ""
+            
+            logger.info(f"retrieved output device {name}: {output_channels}")
             return OutputDevice(
                 id=output_id,
-                name=details.get("properties", {}).get("name", ""),
-                description=details.get("properties", {}).get("description", ""),
-                source_id=details.get("sourceid", {}), # sourceid returns a plain string
-                routable_inputs=details.get("caps", {}).get("routable_inputs", []),
+                name=name,
+                description=description,
+                source_id=source_id,
+                routable_inputs=routable_inputs,
                 channels=output_channels,
             )
 
@@ -424,12 +482,26 @@ class NMOSRegistry:
 
             connector = aiohttp.TCPConnector(ssl=False)
             async with aiohttp.ClientSession(connector=connector) as session:
-                inputs = await self.fetch_device_is08_inputs(node, device, session)
-                outputs = await self.fetch_device_is08_outputs(node, device, session)
+                all_inputs = await self.fetch_device_is08_inputs(node, device, session)
+                all_outputs = await self.fetch_device_is08_outputs(node, device, session)
+                
+                # Store all channels temporarily in the node
+                # Clear existing temporary storage for this fetch
+                node.temp_channel_inputs = all_inputs
+                node.temp_channel_outputs = all_outputs
+                
+                logger.info(f"Stored {len(all_inputs)} inputs and {len(all_outputs)} outputs temporarily in node {node.node_id}")
+                
+                # Assign channels to devices based on source matching
+                assign_temporary_channels_to_devices(node)
+                
+                # Get the channels that were assigned to this device
+                inputs = device.is08_input_channels
+                outputs = device.is08_output_channels
+                
+                logger.info(f"Device {device.device_id} has {len(device.sources)} sources, assigned {len(inputs)} inputs and {len(outputs)} outputs")
+                
                 await self.fetch_device_is08_mapping(node, device, session, inputs, outputs)
-
-                device.is08_input_channels = inputs
-                device.is08_output_channels = outputs
 
             logger.debug(f"---------------------- Found channels: {inputs}, {outputs}")
 
@@ -745,9 +817,6 @@ class NMOSRegistry:
         dev = NMOS_Device(node_id=node_id, device_id=device_id, senders=senders, receivers=receivers, sources=[], is08_input_channels=[], is08_output_channels=[], label=label, description=description)
         node.devices.append(dev)
 
-        # Fetch channel information from IS-08 API
-        asyncio.create_task(self.fetch_device_channels(node, dev))
-
         # Notify UI about device addition
         if self.device_added_callback:
             self._call_callback_with_params(self.device_added_callback, node_id, device_id)
@@ -898,9 +967,77 @@ class NMOSRegistry:
         return json_response({'status': 'registered'}, status=201)
 
     def _handle_registration_source(self, request, resource_data: dict):
+        # Create a nmos.NMOS_Source object and add it to the parent device
+        source_id = resource_data.get('id', None)
+        label = resource_data.get('label', '')
+        description = resource_data.get('description', '')
+        format_type = resource_data.get('format', '')
+        device_id = resource_data.get('device_id', None)
+        parents = resource_data.get('parents', [])
+
+        if source_id is None:
+            return self.error_json_response({'status': 'missing source id'}, status=400)
+        if device_id is None:
+            return self.error_json_response({'status': 'missing device id'}, status=400)
+
+        # Find the parent device
+        parent_device = self.find_device(device_id)
+        if parent_device is None:
+            return self.error_json_response({'status': f'source-registration: bad device ID: {device_id}'}, status=400)
+
+        # Check if source already exists in this device
+        for existing_source in parent_device.sources:
+            if existing_source.source_id == source_id:
+                logger.info(f"Source {source_id} already registered in device {device_id}, ignoring duplicate")
+                return json_response({'status': 'already-registered'}, status=200)
+
+        # Create NMOS_Source object
+        nmos_source = nmos.NMOS_Source(
+            source_id=source_id,
+            label=label,
+            description=description,
+            format=format_type,
+            device_id=device_id,
+            parents=parents
+        )
+
+        # Add source to the device
+        parent_device.sources.append(nmos_source)
+        logger.info(f"Added source {source_id} ({label}) to device {device_id}")
+
+        # Find the node and fetch IS-08 channel information for all devices
+        # Since IS-08 returns all inputs/outputs at the node level, we need to
+        # re-fetch channels for all devices to properly associate them
+        node = self.get_node_by_id(parent_device.node_id)
+        if node is not None:
+            # Fetch channels for all devices on this node
+            for device in node.devices:
+                asyncio.create_task(self.fetch_device_channels(node, device))
+
         return json_response({'status': 'registered'}, status=201)
 
     def _handle_registration_flow(self, request, resource_data: dict):
+        # Register an NMOS Flow
+        # Flows represent logical streams of media content
+        flow_id = resource_data.get('id', None)
+        label = resource_data.get('label', '')
+        description = resource_data.get('description', '')
+        format_type = resource_data.get('format', '')
+        source_id = resource_data.get('source_id', None)
+        device_id = resource_data.get('device_id', None)
+
+        if flow_id is None:
+            return self.error_json_response({'status': 'missing flow id'}, status=400)
+
+        # Flows are typically associated with senders, but we can track them for reference
+        # In NMOS, a sender sends a flow, and a flow is derived from a source
+        logger.info(f"Flow registered: {flow_id} ({label}), source_id={source_id}, device_id={device_id}")
+
+        # Note: Flows are not currently stored in the data model as they're primarily
+        # referenced by senders. This handler acknowledges the registration.
+        # If flow storage is needed in the future, add a flows list to NMOS_Device
+        # and create an NMOS_Flow dataclass in nmos.py
+
         return json_response({'status': 'registered'}, status=201)
 
     def _handle_registration_unknown(self, request, resource_data: dict):

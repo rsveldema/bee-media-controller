@@ -139,6 +139,8 @@ class NMOS_Node:
     api_ver: str = "v1.3"
     channel_mapping_api_ver: str = "v1.0"
     icon: Any = None  # Icon for use in UI widgets like DetailedList
+    temp_channel_inputs: List[InputDevice] = None  # Temporary storage for inputs until sources are available
+    temp_channel_outputs: List[OutputDevice] = None  # Temporary storage for outputs until sources are available
 
 
     def __post_init__(self):
@@ -146,6 +148,10 @@ class NMOS_Node:
             self.devices = []
         if self.properties is None:
             self.properties = {}
+        if self.temp_channel_inputs is None:
+            self.temp_channel_inputs = []
+        if self.temp_channel_outputs is None:
+            self.temp_channel_outputs = []
 
     def __str__(self) -> str:
         """Return a clean string representation for UI display"""

@@ -20,6 +20,57 @@ logger = create_logger(__name__)
 NMOS_STANDARD_PORT = 1936
 
 
+def assign_temporary_channels_to_devices(node: NMOS_Node) -> None:
+    """
+    Assign temporarily stored channels to devices based on source matching.
+    
+    For inputs: match parent_id to device sources
+    For outputs: match source_id to device sources
+    
+    Args:
+        node: The NMOS node with temporary channels to assign
+    """
+    # Build a mapping of source_id to device
+    id_to_device = {}
+    for device in node.devices:
+        id_to_device[device.device_id] = device
+    
+    # Assign input channels based on parent_id matching
+    for input_device in node.temp_channel_inputs:
+        if input_device.parent_id in id_to_device:
+            device = id_to_device[input_device.parent_id]
+            
+            # Check if this input already exists in the device (avoid duplicates)
+            existing_ids = {inp.id for inp in device.is08_input_channels}
+            if input_device.id not in existing_ids:
+                device.is08_input_channels.append(input_device)
+                logger.info(f"Assigned input {input_device.id} to device {device.device_id} (matched parent_id={input_device.parent_id})")
+            else:
+                logger.debug(f"Skipped duplicate input {input_device.id} for device {device.device_id}")
+        else:
+            logger.warning(f"Could not assign input {input_device.id} - parent_id {input_device.parent_id} not found in any device source: {id_to_device}")
+    
+    # Assign output channels based on source_id matching
+    for output_device in node.temp_channel_outputs:
+        if output_device.source_id in id_to_device:
+            device = id_to_device[output_device.source_id]
+            
+            # Check if this output already exists in the device (avoid duplicates)
+            existing_ids = {out.id for out in device.is08_output_channels}
+            if output_device.id not in existing_ids:
+                device.is08_output_channels.append(output_device)
+                logger.info(f"Assigned output {output_device.id} to device {device.device_id} (matched source_id={output_device.source_id})")
+            else:
+                logger.debug(f"Skipped duplicate output {output_device.id} for device {device.device_id}")
+        else:
+            logger.warning(f"Could not assign output {output_device.id} - source_id {output_device.source_id} not found in any device source: {id_to_device}")
+    
+    # Clear temporary storage after assignment
+    node.temp_channel_inputs.clear()
+    node.temp_channel_outputs.clear()
+    logger.info(f"Completed channel assignment for node {node.node_id}")
+
+
 async def fetch_and_add_sources(node: NMOS_Node, session: aiohttp.ClientSession, node_id: str) -> None:
     """
     Fetch sources from the IS-04 Node API and add them to the corresponding devices.
@@ -63,6 +114,9 @@ async def fetch_and_add_sources(node: NMOS_Node, session: aiohttp.ClientSession,
                             device.sources.append(nmos_source)
                             logger.info(f"Added source {source_id} ({label}) to device {device_id}")
                             break
+                
+                # After adding all sources, assign temporary channels to devices
+                assign_temporary_channels_to_devices(node)
             else:
                 logger.warning(f"Failed to fetch sources from {sources_url}: HTTP {response.status}")
     except Exception as e:
@@ -184,52 +238,57 @@ async def fetch_and_add_is08_inputs(node: NMOS_Node, session: aiohttp.ClientSess
         session: The aiohttp ClientSession to use for requests
         node_id: The ID of the node
     """
-    # Fetch inputs for each device
-    for device in node.devices:
-        logger.info(f"Fetching IS-08 inputs for device {device.device_id}")
-        try:
-            inputs_url = f"{node.channelmapping_url}/inputs"
-            async with session.get(inputs_url, timeout=aiohttp.ClientTimeout(total=5)) as inputs_resp:
-                if inputs_resp.status == 200:
-                    input_ids = await inputs_resp.json()
-                    logger.info(f"Found {len(input_ids)} inputs")
+    # Fetch inputs once at the node level (not per device)
+    logger.info(f"Fetching IS-08 inputs for node {node_id}")
+    try:
+        inputs_url = f"{node.channelmapping_url}/inputs"
+        async with session.get(inputs_url, timeout=aiohttp.ClientTimeout(total=5)) as inputs_resp:
+            if inputs_resp.status == 200:
+                input_ids = await inputs_resp.json()
+                logger.info(f"Found {len(input_ids)} inputs")
+                
+                # Fetch details for each input
+                for input_id in input_ids:
+                    input_id_str = input_id.rstrip('/')
+                    properties_url = f"{node.channelmapping_url}/inputs/{input_id_str}/properties"
+                    channels_url = f"{node.channelmapping_url}/inputs/{input_id_str}/channels"
+                    parent_url = f"{node.channelmapping_url}/inputs/{input_id_str}/parent"
                     
-                    # Fetch details for each input
-                    for input_id in input_ids:
-                        input_id_str = input_id.rstrip('/')
-                        properties_url = f"{node.channelmapping_url}/inputs/{input_id_str}/properties"
-                        channels_url = f"{node.channelmapping_url}/inputs/{input_id_str}/channels"
+                    try:
+                        async with session.get(properties_url, timeout=aiohttp.ClientTimeout(total=3)) as prop_resp:
+                            properties = await prop_resp.json() if prop_resp.status == 200 else {}
                         
-                        try:
-                            async with session.get(properties_url, timeout=aiohttp.ClientTimeout(total=3)) as prop_resp:
-                                properties = await prop_resp.json() if prop_resp.status == 200 else {}
-                            
-                            async with session.get(channels_url, timeout=aiohttp.ClientTimeout(total=3)) as chan_resp:
-                                channels_data = await chan_resp.json() if chan_resp.status == 200 else []
-                            
-                            input_channels = [
-                                InputChannel(id=ch.get("id", ""), label=ch.get("label", ""))
-                                for ch in channels_data
-                            ]
+                        async with session.get(channels_url, timeout=aiohttp.ClientTimeout(total=3)) as chan_resp:
+                            channels_data = await chan_resp.json() if chan_resp.status == 200 else []
+                        
+                        async with session.get(parent_url, timeout=aiohttp.ClientTimeout(total=3)) as parent_resp:
+                            parent_data = await parent_resp.json() if parent_resp.status == 200 else {}
+                        
+                        input_channels = [
+                            InputChannel(id=ch.get("id", ""), label=ch.get("label", ""))
+                            for ch in channels_data
+                        ]
 
-                            logger.info(f"Output {input_id_str} has {len(input_channels)} channels")
-                            
-                            input_device = InputDevice(
-                                id=input_id_str,
-                                name=properties.get("name", ""),
-                                description=properties.get("description", ""),
-                                reordering=False,
-                                block_size=0,
-                                parent_id="",
-                                parent_type="",
-                                channels=input_channels
-                            )
-                            device.is08_input_channels.append(input_device)
-                            logger.info(f"Added input device {input_id_str} with {len(input_channels)} channels")
-                        except Exception as e:
-                            logger.warning(f"Error fetching input {input_id_str}: {e}")
-        except Exception as e:
-            logger.warning(f"Error fetching inputs for device {device.device_id}: {e}")
+                        logger.info(f"Input {input_id_str} has {len(input_channels)} channels")
+                        
+                        input_device = InputDevice(
+                            id=input_id_str,
+                            name=properties.get("name", ""),
+                            description=properties.get("description", ""),
+                            reordering=False,
+                            block_size=0,
+                            parent_id=parent_data.get("id", ""),
+                            parent_type=parent_data.get("type", ""),
+                            channels=input_channels
+                        )
+                        
+                        # Store temporarily in node until sources are available for matching
+                        node.temp_channel_inputs.append(input_device)
+                        logger.info(f"Stored input device {input_id_str} with {len(input_channels)} channels (parent_id={input_device.parent_id}) temporarily in node")
+                    except Exception as e:
+                        logger.warning(f"Error fetching input {input_id_str}: {e}")
+    except Exception as e:
+        logger.warning(f"Error fetching inputs for node {node_id}: {e}")
 
 
 async def fetch_and_add_is08_outputs(node: NMOS_Node, session: aiohttp.ClientSession, node_id: str) -> None:
@@ -241,50 +300,57 @@ async def fetch_and_add_is08_outputs(node: NMOS_Node, session: aiohttp.ClientSes
         session: The aiohttp ClientSession to use for requests
         node_id: The ID of the node
     """
-    # Fetch outputs for each device
-    for device in node.devices:
-        logger.info(f"Fetching IS-08 outputs for device {device.device_id}")
-        try:
-            outputs_url = f"{node.channelmapping_url}/outputs"
-            async with session.get(outputs_url, timeout=aiohttp.ClientTimeout(total=5)) as outputs_resp:
-                if outputs_resp.status == 200:
-                    output_ids = await outputs_resp.json()
-                    logger.info(f"Found {len(output_ids)} outputs")
+    # Fetch outputs once at the node level (not per device)
+    logger.info(f"Fetching IS-08 outputs for node {node_id}")
+    try:
+        outputs_url = f"{node.channelmapping_url}/outputs"
+        async with session.get(outputs_url, timeout=aiohttp.ClientTimeout(total=5)) as outputs_resp:
+            if outputs_resp.status == 200:
+                output_ids = await outputs_resp.json()
+                logger.info(f"Found {len(output_ids)} outputs")
+                
+                # Fetch details for each output
+                for output_id in output_ids:
+                    output_id_str = output_id.rstrip('/')
+                    properties_url = f"{node.channelmapping_url}/outputs/{output_id_str}/properties"
+                    channels_url = f"{node.channelmapping_url}/outputs/{output_id_str}/channels"
+                    sourceid_url = f"{node.channelmapping_url}/outputs/{output_id_str}/sourceid"
                     
-                    # Fetch details for each output
-                    for output_id in output_ids:
-                        output_id_str = output_id.rstrip('/')
-                        properties_url = f"{node.channelmapping_url}/outputs/{output_id_str}/properties"
-                        channels_url = f"{node.channelmapping_url}/outputs/{output_id_str}/channels"
+                    try:
+                        async with session.get(properties_url, timeout=aiohttp.ClientTimeout(total=3)) as prop_resp:
+                            properties = await prop_resp.json() if prop_resp.status == 200 else {}
                         
-                        try:
-                            async with session.get(properties_url, timeout=aiohttp.ClientTimeout(total=3)) as prop_resp:
-                                properties = await prop_resp.json() if prop_resp.status == 200 else {}
-                            
-                            async with session.get(channels_url, timeout=aiohttp.ClientTimeout(total=3)) as chan_resp:
-                                channels_data = await chan_resp.json() if chan_resp.status == 200 else []
-                            
-                            output_channels = [
-                                OutputChannel(id=ch.get("id", ""), label=ch.get("label", ""), mapped_device=None, mapped_channel=None)
-                                for ch in channels_data
-                            ]
+                        async with session.get(channels_url, timeout=aiohttp.ClientTimeout(total=3)) as chan_resp:
+                            channels_data = await chan_resp.json() if chan_resp.status == 200 else []
+                        
+                        async with session.get(sourceid_url, timeout=aiohttp.ClientTimeout(total=3)) as source_resp:
+                            source_id = await source_resp.text() if source_resp.status == 200 else ""
+                            # Remove quotes if present
+                            source_id = source_id.strip('"')
+                        
+                        output_channels = [
+                            OutputChannel(id=ch.get("id", ""), label=ch.get("label", ""), mapped_device=None, mapped_channel=None)
+                            for ch in channels_data
+                        ]
 
-                            logger.info(f"Output {output_id_str} has {len(output_channels)} channels")
-                            
-                            output_device = OutputDevice(
-                                id=output_id_str,
-                                name=properties.get("name", ""),
-                                description=properties.get("description", ""),
-                                source_id="",
-                                routable_inputs=[],
-                                channels=output_channels
-                            )
-                            device.is08_output_channels.append(output_device)
-                            logger.info(f"Added output device {output_id_str} with {len(output_channels)} channels")
-                        except Exception as e:
-                            logger.warning(f"Error fetching output {output_id_str}: {e}")
-        except Exception as e:
-            logger.warning(f"Error fetching outputs for device {device.device_id}: {e}")
+                        logger.info(f"Output {output_id_str} has {len(output_channels)} channels")
+                        
+                        output_device = OutputDevice(
+                            id=output_id_str,
+                            name=properties.get("name", ""),
+                            description=properties.get("description", ""),
+                            source_id=source_id,
+                            routable_inputs=[],
+                            channels=output_channels
+                        )
+                        
+                        # Store temporarily in node until sources are available for matching
+                        node.temp_channel_outputs.append(output_device)
+                        logger.info(f"Stored output device {output_id_str} with {len(output_channels)} channels (source_id={source_id}) temporarily in node")
+                    except Exception as e:
+                        logger.warning(f"Error fetching output {output_id_str}: {e}")
+    except Exception as e:
+        logger.warning(f"Error fetching outputs for node {node_id}: {e}")
 
 
 async def fetch_and_add_is08_channels(node: NMOS_Node, session: aiohttp.ClientSession, node_id: str) -> None:
