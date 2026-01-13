@@ -143,7 +143,8 @@ async def is_05_connect_devices(
         
         logger.info(f"Connecting sender {sender_device.device_id} to receiver {receiver_device.device_id} using IS-05")
         
-        async with aiohttp.ClientSession() as session:
+        connector = aiohttp.TCPConnector(ssl=False)
+        async with aiohttp.ClientSession(connector=connector) as session:
             # Get the sender's active transport parameters
             async with session.get(f"{sender_connection_url}/active") as response:
                 if response.status != 200:
@@ -376,7 +377,8 @@ async def is_05_and_is_08_connect_channel_mapping(
         sender_connection_url = f"{sender_node.connection_url}/single/senders/{sender_device.device_id}"
         receiver_connection_url = f"{receiver_node.connection_url}/single/receivers/{receiver_device.device_id}"
         
-        async with aiohttp.ClientSession() as session:
+        connector = aiohttp.TCPConnector(ssl=False)
+        async with aiohttp.ClientSession(connector=connector) as session:
             # Get receiver transport parameters to configure sender
             async with session.get(f"{receiver_connection_url}/transportfile") as response:
                 if response.status != 200:
@@ -575,7 +577,8 @@ async def is_08_connect_channel_mapping(
             },
         }
 
-        async with aiohttp.ClientSession() as session:
+        connector = aiohttp.TCPConnector(ssl=False)
+        async with aiohttp.ClientSession(connector=connector) as session:
             # POST request to /map/activations for immediate activation
             async with session.post(activations_url, json=activation_data) as response:
                 if response.status in [200, 202]:
@@ -711,7 +714,8 @@ async def is_05_disconnect_devices(
         
         logger.info(f"Disconnecting sender {sender_device.device_id} from receiver {receiver_device.device_id} using IS-05")
         
-        async with aiohttp.ClientSession() as session:
+        connector = aiohttp.TCPConnector(ssl=False)
+        async with aiohttp.ClientSession(connector=connector) as session:
             # Disable the sender
             sender_patch_data = {
                 "master_enable": False,
@@ -970,7 +974,8 @@ async def is_08_disconnect_channel_mapping(
             },
         }
 
-        async with aiohttp.ClientSession() as session:
+        connector = aiohttp.TCPConnector(ssl=False)
+        async with aiohttp.ClientSession(connector=connector) as session:
             # POST request to /map/activations for immediate activation
             async with session.post(activations_url, json=activation_data) as response:
                 if response.status in [200, 202]:

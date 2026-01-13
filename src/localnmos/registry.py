@@ -422,7 +422,8 @@ class NMOSRegistry:
         try:
             logger.info(f"---------------------- Fetching channels for device {device.device_id} from node {node.node_id}")
 
-            async with aiohttp.ClientSession() as session:
+            connector = aiohttp.TCPConnector(ssl=False)
+            async with aiohttp.ClientSession(connector=connector) as session:
                 inputs = await self.fetch_device_is08_inputs(node, device, session)
                 outputs = await self.fetch_device_is08_outputs(node, device, session)
                 await self.fetch_device_is08_mapping(node, device, session, inputs, outputs)

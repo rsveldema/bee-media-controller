@@ -95,7 +95,8 @@ class RoutingMatrixCanvas:
         max_row_label_width = 0
         row_label_font = toga.Font(family="sans-serif", size=self.scaled_font_size(8))
         for node, device, sender, channel in senders:
-            label = f"{node.get_name()} / {device.get_name()} / {sender.get_name()}"
+            channel_name = channel.get_name() if channel else "(no channel)"
+            label = f"{node.get_name()} / {device.get_name()} / {sender.get_name()} / {channel_name}"
             label_width, _ = self.canvas.measure_text(label, font=row_label_font)
             max_row_label_width = max(max_row_label_width, label_width)
         
@@ -103,7 +104,8 @@ class RoutingMatrixCanvas:
         max_col_label_width = 0
         col_label_font = toga.Font(family="sans-serif", size=self.scaled_font_size(8))
         for node, device, receiver, channel in receivers:
-            label = f"{node.get_name()} / {device.get_name()} / {receiver.get_name()}"
+            channel_name = channel.get_name() if channel else "(no channel)"
+            label = f"{node.get_name()} / {device.get_name()} / {receiver.get_name()} / {channel_name}"
             label_width, _ = self.canvas.measure_text(label, font=col_label_font)
             max_col_label_width = max(max_col_label_width, label_width)
         
@@ -172,8 +174,9 @@ class RoutingMatrixCanvas:
         x = self.margin_left
         
         for idx, (node, device, receiver, channel) in enumerate(receivers):
-            # Build label with node, device, and receiver names
-            label = f"{node.get_name()} / {device.get_name()} / {receiver.get_name()}"
+            # Build label with node, device, receiver, and channel names
+            channel_name = channel.get_name() if channel else "(no channel)"
+            label = f"{node.get_name()} / {device.get_name()} / {receiver.get_name()} / {channel_name}"
             
             # Use a sub-context for isolated transformations
             with self.canvas.context.Context():
@@ -206,8 +209,9 @@ class RoutingMatrixCanvas:
         row_label_x = 10 + senders_text_width + 10  # 10px left margin + text width + 10px spacing
         
         for idx, (node, device, sender, channel) in enumerate(senders):
-            # Build label with node, device, and sender names
-            label = f"{node.get_name()} / {device.get_name()} / {sender.get_name()}"
+            # Build label with node, device, sender, and channel names
+            channel_name = channel.get_name() if channel else "(no channel)"
+            label = f"{node.get_name()} / {device.get_name()} / {sender.get_name()} / {channel_name}"
             
             with self.canvas.Fill(color=rgb(0, 0, 0)) as text_filler:
                 text_filler.write_text(
