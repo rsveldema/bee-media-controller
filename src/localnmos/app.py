@@ -395,7 +395,11 @@ class LocalNMOS(toga.App):
         
         # Update the matrix canvas with the registry reference
         if self.matrix_canvas:
+            print(f"DEBUG: Setting matrix_canvas.registry to {self.registry}")
             self.matrix_canvas.registry = self.registry
+            print(f"DEBUG: matrix_canvas.registry is now {self.matrix_canvas.registry}")
+        else:
+            print(f"DEBUG: self.matrix_canvas is None, cannot set registry")
         
         # Update the listen IP selector with the registry reference
         if self.listen_ip_selector:

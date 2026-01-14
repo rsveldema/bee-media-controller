@@ -474,6 +474,7 @@ class NMOSRegistry:
                                     input_channel = input_device.channels[channel_index]
                                     output_channel.mapped_device = input_channel
                                     logger.info(f"  ✓✓✓ Mapped {output_device.name}/{output_channel.label} -> {input_device.name}/{input_channel.label}")
+                                    logger.info(f"  Set mapped_device on output_channel object at {id(output_channel)}, output_device at {id(output_device)}")
                                 else:
                                     logger.warning(f"  Channel index {channel_index} out of range for input device {input_device.name} (has {len(input_device.channels)} channels)")
                             else:
@@ -515,9 +516,16 @@ class NMOSRegistry:
                 logger.info(f"Device {device.device_id} has {len(device.sources)} sources, assigned {len(inputs)} inputs and {len(outputs)} outputs")
                 
                 # Always re-fetch IS-08 mappings to capture any changes
-                # Pass ALL inputs and outputs from the node, not just device-specific ones
-                # This handles cross-device mappings and mapping updates
-                await self.fetch_device_is08_mapping(node, device, session, all_inputs, all_outputs)
+                # IS-08 mappings can reference inputs/outputs from ANY device on the node,
+                # so we need to pass ALL inputs and outputs from all devices on this node
+                all_node_inputs = []
+                all_node_outputs = []
+                for dev in node.devices:
+                    all_node_inputs.extend(dev.is08_input_channels)
+                    all_node_outputs.extend(dev.is08_output_channels)
+                
+                logger.info(f"Collected {len(all_node_inputs)} inputs and {len(all_node_outputs)} outputs from all devices on node {node.node_id}")
+                await self.fetch_device_is08_mapping(node, device, session, all_node_inputs, all_node_outputs)
                 logger.info(f"Fetched IS-08 mappings for node {node.node_id}")
 
             logger.debug(f"---------------------- Found channels: {inputs}, {outputs}")
