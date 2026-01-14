@@ -6,6 +6,7 @@ from typing import List
 import toga
 from toga.constants import Baseline
 from toga.colors import rgb
+from toga.style.pack import Pack
 
 from localnmos import nmos
 
@@ -114,6 +115,10 @@ class RoutingMatrixCanvas:
         rotated_label_height = max_col_label_width * 0.707
         self.margin_top = 40 + rotated_label_height + 20  # "Receivers" label + rotated text + spacing
         
+        # The rotated column headers also extend horizontally to the right
+        # Horizontal extent = width * cos(45°) ≈ width * 0.707
+        rotated_label_right_extent = max_col_label_width * 0.707
+        
         # Measure "Senders" axis label width
         axis_label_font = toga.Font(family="sans-serif", size=self.scaled_font_size(14))
         senders_text_width, _ = self.canvas.measure_text("Senders", font=axis_label_font)
@@ -121,12 +126,21 @@ class RoutingMatrixCanvas:
         # Set margin_left to accommodate axis label + row labels + spacing
         self.margin_left = 10 + senders_text_width + 10 + max_row_label_width + 20
         
+        # Calculate required canvas size based on matrix dimensions
+        # Include space for rotated column headers extending to the right
+        required_width = self.margin_left + len(receivers) * self.cell_width + rotated_label_right_extent + 20
+        required_height = self.margin_top + len(senders) * self.cell_height + 20  # +20 for bottom margin
+        
+        # Store the required dimensions for use by the parent container
+        self.required_width = max(int(required_width), 800)
+        self.required_height = max(int(required_height), 600)
+        
         # Clear and draw on canvas
         self.canvas.context.clear()
         
-        # Draw light blue background
+        # Draw light blue background to fill the entire canvas
         with self.canvas.Fill(color=rgb(240, 248, 255)) as fill:
-            fill.rect(0, 0, self.canvas.layout.content_width, self.canvas.layout.content_height)
+            fill.rect(0, 0, self.required_width, self.required_height)
         
         # Draw axis labels
         self._draw_axis_labels()

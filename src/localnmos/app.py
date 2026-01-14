@@ -32,6 +32,7 @@ from .registry import NMOSRegistry
 from .nmos import NMOS_Node
 from .error_log import ErrorLog
 from .matrix_canvas import RoutingMatrixCanvas
+from .node_details_handler import NodeDetailsHandler
 
 # Build date - automatically set when the module is imported
 BUILD_DATE = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -91,6 +92,12 @@ class LocalNMOS(toga.App):
 
     def draw_routing_matrix(self):
         self.matrix_canvas.draw()
+        # Update the canvas container size after drawing
+        if hasattr(self, 'canvas_container') and hasattr(self.matrix_canvas, 'required_width'):
+            self.canvas_container.style = Pack(
+                width=self.matrix_canvas.required_width,
+                height=self.matrix_canvas.required_height
+            )
 
     def refresh_matrix_command(self, widget):
         """Handler for the Refresh Routing Matrix menu command"""
@@ -261,6 +268,7 @@ class LocalNMOS(toga.App):
         """Construct and show the Toga application."""
         self.model = UI_NMOS_ConnectionMatrix()
         self.registry = None  # Will be initialized in on_running
+        self.node_details_handler = None  # Will be initialized after main_window is created
 
         # Create menu commands
         error_log_command = toga.Command(
@@ -314,9 +322,16 @@ class LocalNMOS(toga.App):
         main_box = toga.Box(direction=ROW, style=Pack(flex=1))
 
         nodes_box = toga.Box(direction=COLUMN, style=Pack(width=300))
+        
+        # Create the main_window first (we'll set content later)
+        self.main_window = toga.MainWindow(title=self.formal_name, size=(1600, 1200))
+        
+        # Now initialize the node details handler with the main window
+        self.node_details_handler = NodeDetailsHandler(self.main_window)
+        
         self.listbox = toga.DetailedList(
             data=[],
-            on_select=self.on_node_select,
+            on_select=self.node_details_handler.on_node_select,
             style=Pack(flex=1)
         )
         nodes_box.add(toga.Label("NMOS Nodes (MDNS Discovery)"))
@@ -330,17 +345,24 @@ class LocalNMOS(toga.App):
         nodes_box.add(self.error_status_label)
 
         self.canvas = toga.Canvas(
-            flex=1, on_resize=self.on_resize, on_press=self.on_press
+            on_resize=self.on_resize, on_press=self.on_press,
+            style=Pack(flex=1)
         )
 
         # Initialize the matrix canvas drawing class
         self.matrix_canvas = RoutingMatrixCanvas(self.canvas, self.registry, self.model)
 
+        # Create a container box for the canvas with explicit size
+        self.canvas_container = toga.Box(
+            style=Pack(width=800, height=600)
+        )
+        self.canvas_container.add(self.canvas)
+
         self.draw_routing_matrix()
 
-        # Wrap canvas in a ScrollContainer to make it scrollable
+        # Wrap canvas container in a ScrollContainer to make it scrollable
         scroll_container = toga.ScrollContainer(
-            content=self.canvas,
+            content=self.canvas_container,
             horizontal=True,
             vertical=True,
             style=Pack(flex=1)
@@ -354,91 +376,12 @@ class LocalNMOS(toga.App):
         container_box.add(toolbar)
         container_box.add(main_box)
 
-        self.main_window = toga.MainWindow(title=self.formal_name, size=(1600, 1200))
+        # Set the content and show (main_window was already created earlier)
         self.main_window.content = container_box
         self.main_window.show()
 
         self.update_error_status()
         self.loop.call_soon_threadsafe(self.sync_task, "Hi")
-
-    async def on_node_select(self, widget):
-        """Handler for when a node is selected in the list"""
-        if not widget.selection:
-            logger.debug("on_node_select called but no selection")
-            return
-        
-        try:
-            # For DetailedList, widget.selection returns a Row object
-            # The actual NMOS_Node is in the 'title' attribute of the Row
-            selected_nmos_node: NMOS_Node = widget.selection.title
-            
-            logger.info(f"Node selected: {selected_nmos_node.name}")
-            
-            # Build detailed information about the node
-            details = []
-            details.append(f"Node: {selected_nmos_node.name}")
-            details.append(f"Node ID: {selected_nmos_node.node_id}")
-            details.append(f"Address: {selected_nmos_node.address}:{selected_nmos_node.port}")
-            details.append("")
-            
-            # Use the selected node directly (already has all the data)
-            details.append(f"Devices: {len(selected_nmos_node.devices)}")
-            for device in selected_nmos_node.devices:
-                        details.append(f"  • Device: {device.label} (ID: {device.device_id})")
-                        
-                        # Show sources
-                        if hasattr(device, 'sources') and device.sources:
-                            details.append(f"    Sources: {len(device.sources)}")
-                            for source in device.sources:
-                                if hasattr(source, 'source_id'):
-                                    details.append(f"      - {source.label} (ID: {source.source_id})")
-                        
-                        # Show senders
-                        if hasattr(device, 'senders') and device.senders:
-                            details.append(f"    Senders: {len(device.senders)}")
-                            for sender in device.senders:
-                                if hasattr(sender, 'sender_id'):
-                                    details.append(f"      - {sender.label} (ID: {sender.sender_id})")
-                        
-                        # Show receivers
-                        if hasattr(device, 'receivers') and device.receivers:
-                            details.append(f"    Receivers: {len(device.receivers)}")
-                            for receiver in device.receivers:
-                                if hasattr(receiver, 'receiver_id'):
-                                    details.append(f"      - {receiver.label} (ID: {receiver.receiver_id})")
-                        
-                        # Show channels (IS-08)
-                        if hasattr(device, 'is08_input_channels') and device.is08_input_channels:
-                            details.append(f"    Input Channels:")
-                            for chan_dev in device.is08_input_channels:
-                                details.append(f"      Input Device: {chan_dev.name}")
-                                for channel in chan_dev.channels:
-                                    details.append(f"        - Channel {channel.label} (ID: {channel.id})")
-                        
-                        if hasattr(device, 'is08_output_channels') and device.is08_output_channels:
-                            details.append(f"    Output Channels:")
-                            for chan_dev in device.is08_output_channels:
-                                details.append(f"      Output Device: {chan_dev.name}")
-                                for channel in chan_dev.channels:
-                                    mapped_info = ""
-                                    if channel.mapped_device:
-                                        mapped_info = f" → mapped to {channel.mapped_device.id}"
-                                    details.append(f"        - Channel {channel.label} (ID: {channel.id}){mapped_info}")
-                        
-                        details.append("")
-            
-            # Show the details in a dialog
-            await self.main_window.dialog(toga.InfoDialog(
-                f"Node Details: {selected_nmos_node.name}",
-                "\n".join(details)
-            ))
-        except Exception as e:
-            import traceback
-            # Show error dialog with details
-            await self.main_window.dialog(toga.ErrorDialog(
-                "Error",
-                f"Failed to show node details: {e}\n\n{traceback.format_exc()}"
-            ))
 
     def on_node_added(self, node: NMOS_Node):
         """Callback when an NMOS node is discovered"""
