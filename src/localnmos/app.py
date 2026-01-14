@@ -393,6 +393,10 @@ class LocalNMOS(toga.App):
         await self.registry.start()
         self.model.nodes = self.registry.nodes
         
+        # Update the matrix canvas with the registry reference
+        if self.matrix_canvas:
+            self.matrix_canvas.registry = self.registry
+        
         # Update the listen IP selector with the registry reference
         if self.listen_ip_selector:
             self.listen_ip_selector.registry = self.registry

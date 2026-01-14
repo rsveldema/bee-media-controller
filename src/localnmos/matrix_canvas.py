@@ -296,11 +296,16 @@ class RoutingMatrixCanvas:
                 y += self.cell_height
         
         # Draw connection indicators
+        print(f"About to check registry: registry={self.registry}")
         if self.registry:
+            print(f"Registry is set! Calling _draw_connections")
             self._draw_connections(senders, receivers)
+        else:
+            print(f"Registry is NOT set - skipping _draw_connections")
     
     def _draw_connections(self, senders, receivers):
         """Draw indicators for active connections in the matrix"""
+        print(f"_draw_connections called with {len(senders)} senders and {len(receivers)} receivers")
         for sender_idx, (s_node, s_device, s_sender, s_channel) in enumerate(senders):
             for receiver_idx, (r_node, r_device, r_receiver, r_channel) in enumerate(receivers):
                 # Check if there's a connection between this sender and receiver
@@ -336,20 +341,37 @@ class RoutingMatrixCanvas:
         if not self.registry:
             return False
         
+        # Debug logging
+        print(f"_is_connected check: sender={s_sender.get_name()}/{s_channel.get_name() if s_channel else 'None'}, receiver={r_receiver.get_name()}/{r_channel.get_name() if r_channel else 'None'}")
+        
         # For now, check if both are on the same node and have channel mappings
         if s_node.node.node_id == r_node.node.node_id:
             # Same node - check IS-08 channel mappings
             nmos_node = self.registry.nodes.get(s_node.node.node_id)
             if nmos_node:
+                print(f"  Found node {nmos_node.node_id} with {len(nmos_node.devices)} devices")
                 for device in nmos_node.devices:
-                    if device.device_id == r_device.device.device_id:
-                        # Check if receiver's input channels are mapped to sender's output
+                    print(f"  Checking device {device.device_id} (looking for sender device {s_device.device.device_id})")
+                    if device.device_id == s_device.device.device_id:
+                        print(f"    Found sender device! It has {len(device.is08_output_channels)} output channel lists")
+                        # Check if sender's output channel is mapped to receiver's input channel
                         if r_channel and s_channel:
                             for output_dev in device.is08_output_channels:
+                                print(f"      Output device {output_dev.id} has {len(output_dev.channels)} channels")
                                 for out_ch in output_dev.channels:
-                                    if out_ch.id == s_channel.channel.id:
-                                        if out_ch.mapped_device and out_ch.mapped_device.id == r_channel.channel.id:
-                                            return True
+                                    print(f"        Checking output channel: id='{out_ch.id}', label='{out_ch.label}', mapped_device={out_ch.mapped_device}")
+                                    # Match output channel by ID or label
+                                    if out_ch.id == s_channel.channel.id or out_ch.label == s_channel.channel.label:
+                                        print(f"          Matched sender channel! mapped_device = {out_ch.mapped_device}")
+                                        # Check if this output channel has a mapped InputChannel
+                                        if out_ch.mapped_device:
+                                            print(f"          Checking mapped_device: id='{out_ch.mapped_device.id}', label='{out_ch.mapped_device.label}'")
+                                            print(f"          Against receiver channel: id='{r_channel.channel.id}', label='{r_channel.channel.label}'")
+                                            # Compare the mapped InputChannel with the receiver channel
+                                            if (out_ch.mapped_device.id == r_channel.channel.id or 
+                                                out_ch.mapped_device.label == r_channel.channel.label):
+                                                print(f"          ✓ CONNECTED!")
+                                                return True
         
         # Check IS-05 connections between different nodes
         # This would require tracking sender-receiver connections in the registry
