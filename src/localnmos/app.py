@@ -411,8 +411,38 @@ class LocalNMOS(toga.App):
         """
         if not hasattr(self, 'matrix_canvas'):
             return
+        
+        # Get the cell information at the clicked position
+        sender_info, receiver_info = self.matrix_canvas.get_cell_at_position(x, y)
+        
+        if sender_info is None or receiver_info is None:
+            # Click was outside the matrix
+            return
+        
+        # Unpack sender information
+        sender_node, sender_device, sender_obj, sender_channel = sender_info
+        
+        # Unpack receiver information
+        receiver_node, receiver_device, receiver_obj, receiver_channel = receiver_info
+        
+        # Log the click information
+        sender_node_name = sender_node.get_name() if sender_node else "Unknown"
+        sender_device_name = sender_device.get_name() if sender_device else "Unknown"
+        sender_name = sender_obj.get_name() if sender_obj else "Unknown"
+        sender_channel_name = sender_channel.get_name() if sender_channel else "No channel"
+        
+        receiver_node_name = receiver_node.get_name() if receiver_node else "Unknown"
+        receiver_device_name = receiver_device.get_name() if receiver_device else "Unknown"
+        receiver_name = receiver_obj.get_name() if receiver_obj else "Unknown"
+        receiver_channel_name = receiver_channel.get_name() if receiver_channel else "No channel"
+        
+        print(f"Matrix cell clicked:")
+        print(f"  Sender: {sender_node_name} / {sender_device_name} / {sender_name} / {sender_channel_name}")
+        print(f"  Receiver: {receiver_node_name} / {receiver_device_name} / {receiver_name} / {receiver_channel_name}")
+        
+        # TODO: Implement IS-08 channel mapping toggle here
             
-
+        
 
 
     async def on_exit(self):

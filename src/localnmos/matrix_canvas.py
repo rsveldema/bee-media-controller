@@ -40,6 +40,41 @@ class RoutingMatrixCanvas:
         """Set the zoom factor for the canvas"""
         self.zoom_factor = factor
     
+    def get_cell_at_position(self, x, y):
+        """
+        Get the sender and receiver at the given canvas position.
+        
+        Args:
+            x: X coordinate on the canvas
+            y: Y coordinate on the canvas
+            
+        Returns:
+            Tuple of (sender_info, receiver_info) where each is a tuple of
+            (node, device, sender/receiver, channel) or (None, None) if outside matrix
+        """
+        # Check if we have sender/receiver data
+        if not hasattr(self, 'senders') or not hasattr(self, 'receivers'):
+            return (None, None)
+        
+        # Check if click is within matrix bounds
+        if x < self.margin_left or y < self.margin_top:
+            return (None, None)
+        
+        # Calculate column (receiver) index
+        col_index = int((x - self.margin_left) / self.cell_width)
+        if col_index < 0 or col_index >= len(self.receivers):
+            return (None, None)
+        
+        # Calculate row (sender) index
+        row_index = int((y - self.margin_top) / self.cell_height)
+        if row_index < 0 or row_index >= len(self.senders):
+            return (None, None)
+        
+        sender_info = self.senders[row_index]
+        receiver_info = self.receivers[col_index]
+        
+        return (sender_info, receiver_info)
+    
     def scaled_font_size(self, base_size):
         """Get a font size scaled by the current zoom factor"""
         return int(base_size * self.zoom_factor)
@@ -49,6 +84,10 @@ class RoutingMatrixCanvas:
         # Build flat lists of all senders (rows) and receivers (columns)
         senders = []  # List of (node, device, sender, channel) tuples
         receivers = []  # List of (node, device, receiver, channel) tuples
+        
+        # Store for later access (e.g., click detection)
+        self.senders = senders
+        self.receivers = receivers
         
         # Traverse the model to build sender rows
         row_nodes = self.model.get_rows()
