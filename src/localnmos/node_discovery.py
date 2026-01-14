@@ -58,50 +58,130 @@ def assign_temporary_channels_to_devices(node: NMOS_Node) -> None:
     """
     Assign temporarily stored channels to devices based on source matching.
     
-    For inputs: match parent_id to device sources
-    For outputs: match source_id to device sources
+    For inputs: match parent_id to device ID or source ID
+    For outputs: match source_id to device ID or source ID
     
     Args:
         node: The NMOS node with temporary channels to assign
     """
-    # Build a mapping of source_id to device
-    id_to_device = {}
+    # Build mappings for both device IDs and source IDs
+    device_id_to_device = {}
+    source_id_to_device = {}
+    
     for device in node.devices:
-        id_to_device[device.device_id] = device
+        device_id_to_device[device.device_id] = device
+        for source in device.sources:
+            source_id_to_device[source.source_id] = device
     
     # Assign input channels based on parent_id matching
     for input_device in node.temp_channel_inputs:
-        if input_device.parent_id in id_to_device:
-            device = id_to_device[input_device.parent_id]
-            
+        matched_device = None
+        match_type = None
+        
+        # Try matching parent_id as device ID first
+        if input_device.parent_id in device_id_to_device:
+            matched_device = device_id_to_device[input_device.parent_id]
+            match_type = "device_id"
+        # Then try matching as source ID
+        elif input_device.parent_id in source_id_to_device:
+            matched_device = source_id_to_device[input_device.parent_id]
+            match_type = "source_id"
+        
+        if matched_device:
             # Check if this input already exists in the device (avoid duplicates)
-            existing_ids = {inp.id for inp in device.is08_input_channels}
+            existing_ids = {inp.id for inp in matched_device.is08_input_channels}
             if input_device.id not in existing_ids:
-                device.is08_input_channels.append(input_device)
-                logger.info(f"Assigned input {input_device.id} to device {device.device_id} (matched parent_id={input_device.parent_id})")
+                matched_device.is08_input_channels.append(input_device)
+                logger.info(f"Assigned input {input_device.id} to device {matched_device.device_id} (matched parent_id={input_device.parent_id} as {match_type})")
             else:
-                logger.debug(f"Skipped duplicate input {input_device.id} for device {device.device_id}")
+                logger.debug(f"Skipped duplicate input {input_device.id} for device {matched_device.device_id}")
         else:
-            logger.warning(f"Could not assign input {input_device.id} - parent_id {input_device.parent_id} not found in any device source: {id_to_device}")
-    
-    # Assign output channels based on source_id matching
-    for output_device in node.temp_channel_outputs:
-        if output_device.source_id in id_to_device:
-            device = id_to_device[output_device.source_id]
+            # Fallback strategies for unmatched devices (e.g., RTP devices with empty parent_id)
+            fallback_device = None
+            fallback_reason = None
             
-            # Check if this output already exists in the device (avoid duplicates)
-            existing_ids = {out.id for out in device.is08_output_channels}
-            if output_device.id not in existing_ids:
-                device.is08_output_channels.append(output_device)
-                logger.info(f"Assigned output {output_device.id} to device {device.device_id} (matched source_id={output_device.source_id})")
+            # Strategy 1: For RTP devices, try to find a device with "rtp" in its label
+            if 'rtp' in input_device.id.lower() or 'rtp' in input_device.name.lower():
+                for device in node.devices:
+                    if 'rtp' in device.label.lower():
+                        fallback_device = device
+                        fallback_reason = "RTP name matching"
+                        break
+            
+            # Strategy 2: If still no match, assign to all devices (cross-device mapping supported)
+            if not fallback_device and len(node.devices) > 0:
+                # Assign to all devices since IS-08 supports cross-device mappings
+                for device in node.devices:
+                    existing_ids = {inp.id for inp in device.is08_input_channels}
+                    if input_device.id not in existing_ids:
+                        device.is08_input_channels.append(input_device)
+                logger.info(f"Assigned input {input_device.id} to all {len(node.devices)} devices (fallback: empty parent_id)")
+                continue
+            
+            if fallback_device:
+                existing_ids = {inp.id for inp in fallback_device.is08_input_channels}
+                if input_device.id not in existing_ids:
+                    fallback_device.is08_input_channels.append(input_device)
+                    logger.info(f"Assigned input {input_device.id} to device {fallback_device.device_id} (fallback: {fallback_reason})")
             else:
-                logger.debug(f"Skipped duplicate output {output_device.id} for device {device.device_id}")
-        else:
-            logger.warning(f"Could not assign output {output_device.id} - source_id {output_device.source_id} not found in any device source: {id_to_device}")
+                logger.warning(f"Could not assign input {input_device.id} - parent_id '{input_device.parent_id}' (type={input_device.parent_type}) not found. Available device IDs: {list(device_id_to_device.keys())}, source IDs: {list(source_id_to_device.keys())}")
+            logger.warning(f"Could not assign input {input_device.id} - parent_id '{input_device.parent_id}' (type={input_device.parent_type}) not found. Available device IDs: {list(device_id_to_device.keys())}, source IDs: {list(source_id_to_device.keys())}")
     
-    # Clear temporary storage after assignment
-    node.temp_channel_inputs.clear()
-    node.temp_channel_outputs.clear()
+    # Assign output channels based on source_id matching  
+    for output_device in node.temp_channel_outputs:
+        matched_device = None
+        match_type = None
+        
+        # Try matching source_id as device ID first
+        if output_device.source_id in device_id_to_device:
+            matched_device = device_id_to_device[output_device.source_id]
+            match_type = "device_id"
+        # Then try matching as source ID
+        elif output_device.source_id in source_id_to_device:
+            matched_device = source_id_to_device[output_device.source_id]
+            match_type = "source_id"
+        
+        if matched_device:
+            # Check if this output already exists in the device (avoid duplicates)
+            existing_ids = {out.id for out in matched_device.is08_output_channels}
+            if output_device.id not in existing_ids:
+                matched_device.is08_output_channels.append(output_device)
+                logger.info(f"Assigned output {output_device.id} to device {matched_device.device_id} (matched source_id={output_device.source_id} as {match_type})")
+            else:
+                logger.debug(f"Skipped duplicate output {output_device.id} for device {matched_device.device_id}")
+        else:
+            # Fallback strategies for unmatched devices (e.g., RTP devices with empty source_id)
+            fallback_device = None
+            fallback_reason = None
+            
+            # Strategy 1: For RTP devices, try to find a device with "rtp" in its label
+            if 'rtp' in output_device.id.lower() or 'rtp' in output_device.name.lower():
+                for device in node.devices:
+                    if 'rtp' in device.label.lower():
+                        fallback_device = device
+                        fallback_reason = "RTP name matching"
+                        break
+            
+            # Strategy 2: If still no match, assign to all devices (cross-device mapping supported)
+            if not fallback_device and len(node.devices) > 0:
+                # Assign to all devices since IS-08 supports cross-device mappings
+                for device in node.devices:
+                    existing_ids = {out.id for out in device.is08_output_channels}
+                    if output_device.id not in existing_ids:
+                        device.is08_output_channels.append(output_device)
+                logger.info(f"Assigned output {output_device.id} to all {len(node.devices)} devices (fallback: empty source_id)")
+                continue
+            
+            if fallback_device:
+                existing_ids = {out.id for out in fallback_device.is08_output_channels}
+                if output_device.id not in existing_ids:
+                    fallback_device.is08_output_channels.append(output_device)
+                    logger.info(f"Assigned output {output_device.id} to device {fallback_device.device_id} (fallback: {fallback_reason})")
+            else:
+                logger.warning(f"Could not assign output {output_device.id} - source_id '{output_device.source_id}' not found. Available device IDs: {list(device_id_to_device.keys())}, source IDs: {list(source_id_to_device.keys())}")
+    
+    # Note: We do NOT clear temp storage here because the caller may still need these lists
+    # (e.g., fetch_device_is08_mapping receives all_inputs/all_outputs which reference temp storage)
     logger.info(f"Completed channel assignment for node {node.node_id}")
 
 

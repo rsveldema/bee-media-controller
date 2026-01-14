@@ -34,6 +34,8 @@ from .error_log import ErrorLog
 from .matrix_canvas import RoutingMatrixCanvas
 from .node_details_handler import NodeDetailsHandler
 from .listen_ip_selector import ListenIPSelector
+from . import channel_mapping
+from .listen_ip_selector import ListenIPSelector
 
 # Build date - automatically set when the module is imported
 BUILD_DATE = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -405,6 +407,42 @@ class LocalNMOS(toga.App):
 
             self.draw_routing_matrix()        
 
+    def _is_channel_connected(self, sender_node, sender_device, sender_obj, sender_channel,
+                               receiver_node, receiver_device, receiver_obj, receiver_channel):
+        """Check if there's an active connection between sender and receiver channels"""
+        # Use the same logic as the matrix canvas _is_connected method
+        if not self.registry:
+            return False
+        
+        # Get the actual NMOS node objects
+        s_node = sender_node.node if hasattr(sender_node, 'node') else None
+        r_node = receiver_node.node if hasattr(receiver_node, 'node') else None
+        
+        if not s_node or not r_node:
+            return False
+        
+        # For now, check if both are on the same node and have channel mappings
+        if s_node.node_id == r_node.node_id:
+            # Same node - check IS-08 channel mappings
+            nmos_node = self.registry.nodes.get(s_node.node_id)
+            if nmos_node:
+                r_device = receiver_device.device if hasattr(receiver_device, 'device') else None
+                if r_device:
+                    for device in nmos_node.devices:
+                        if device.device_id == r_device.device_id:
+                            # Check if receiver's input channels are mapped to sender's output
+                            if receiver_channel and sender_channel:
+                                r_chan = receiver_channel.channel if hasattr(receiver_channel, 'channel') else None
+                                s_chan = sender_channel.channel if hasattr(sender_channel, 'channel') else None
+                                if r_chan and s_chan:
+                                    for output_dev in device.is08_output_channels:
+                                        for out_ch in output_dev.channels:
+                                            if out_ch.id == s_chan.id:
+                                                if out_ch.mapped_device and out_ch.mapped_device.id == r_chan.id:
+                                                    return True
+        
+        return False
+
     async def on_press(self, widget, x, y, **kwargs):
         """When clicking on the routing matrix at (x, y), toggle the channel mapping between output and input channels.
         Uses IS-08 channel mapping API to update the routing.
@@ -440,9 +478,101 @@ class LocalNMOS(toga.App):
         print(f"  Sender: {sender_node_name} / {sender_device_name} / {sender_name} / {sender_channel_name}")
         print(f"  Receiver: {receiver_node_name} / {receiver_device_name} / {receiver_name} / {receiver_channel_name}")
         
-        # TODO: Implement IS-08 channel mapping toggle here
-            
+        # Check if a connection exists
+        is_connected = self._is_channel_connected(
+            sender_node, sender_device, sender_obj, sender_channel,
+            receiver_node, receiver_device, receiver_obj, receiver_channel
+        )
         
+        # Get the actual NMOS objects from the UI model wrappers
+        sender_nmos_node = sender_node.node if hasattr(sender_node, 'node') else None
+        sender_nmos_device = sender_device.device if hasattr(sender_device, 'device') else None
+        receiver_nmos_node = receiver_node.node if hasattr(receiver_node, 'node') else None
+        receiver_nmos_device = receiver_device.device if hasattr(receiver_device, 'device') else None
+        
+        if not all([sender_nmos_node, sender_nmos_device, receiver_nmos_node, receiver_nmos_device]):
+            print("Error: Could not extract NMOS objects from UI model")
+            return
+        
+        # Extract output/input devices and channels
+        # For channels, we have the channel object directly
+        sender_output_chan = sender_channel.channel if hasattr(sender_channel, 'channel') else None
+        receiver_input_chan = receiver_channel.channel if hasattr(receiver_channel, 'channel') else None
+        
+        # Find the output device containing the sender channel
+        sender_output_dev = None
+        if sender_output_chan and sender_nmos_device.is08_output_channels:
+            for out_dev in sender_nmos_device.is08_output_channels:
+                for chan in out_dev.channels:
+                    if chan.id == sender_output_chan.id or chan.label == sender_output_chan.label:
+                        sender_output_dev = out_dev
+                        break
+                if sender_output_dev:
+                    break
+        
+        # Find the input device containing the receiver channel
+        receiver_input_dev = None
+        if receiver_input_chan and receiver_nmos_device.is08_input_channels:
+            for in_dev in receiver_nmos_device.is08_input_channels:
+                for chan in in_dev.channels:
+                    if chan.id == receiver_input_chan.id or chan.label == receiver_input_chan.label:
+                        receiver_input_dev = in_dev
+                        break
+                if receiver_input_dev:
+                    break
+        
+        # Debug logging
+        print(f"Extracted devices/channels:")
+        print(f"  sender_output_dev: {sender_output_dev.id if sender_output_dev else 'None'}")
+        print(f"  sender_output_chan: {sender_output_chan.id if sender_output_chan else 'None'}")
+        print(f"  receiver_input_dev: {receiver_input_dev.id if receiver_input_dev else 'None'}")
+        print(f"  receiver_input_chan: {receiver_input_chan.id if receiver_input_chan else 'None'}")
+        
+        if not sender_output_dev or not receiver_input_dev:
+            print("Error: Could not find IS-08 output or input device for the selected channels")
+            return
+        
+        try:
+            if is_connected:
+                # Disconnect the mapping
+                print(f"Disconnecting channel mapping...")
+                await channel_mapping.disconnect_channel_mapping(
+                    sender_nmos_node,
+                    sender_nmos_device,
+                    sender_output_dev,
+                    sender_output_chan,
+                    receiver_nmos_node,
+                    receiver_nmos_device,
+                    receiver_input_dev,
+                    receiver_input_chan,
+                    fetch_device_channels_callback=self.registry.fetch_device_channels if self.registry else None
+                )
+                print("Channel mapping disconnected successfully")
+            else:
+                # Connect the mapping
+                print(f"Connecting channel mapping...")
+                await channel_mapping.connect_channel_mapping(
+                    sender_nmos_node,
+                    sender_nmos_device,
+                    sender_output_dev,
+                    sender_output_chan,
+                    receiver_nmos_node,
+                    receiver_nmos_device,
+                    receiver_input_dev,
+                    receiver_input_chan,
+                    fetch_device_channels_callback=self.registry.fetch_device_channels if self.registry else None
+                )
+                print("Channel mapping connected successfully")
+            
+            # Refresh the matrix to show updated connections
+            self.draw_routing_matrix()
+            
+        except Exception as e:
+            print(f"Error toggling channel mapping: {e}")
+            import traceback
+            traceback.print_exc()
+            
+
 
 
     async def on_exit(self):

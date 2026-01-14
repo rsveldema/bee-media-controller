@@ -306,16 +306,26 @@ class RoutingMatrixCanvas:
                 # Check if there's a connection between this sender and receiver
                 if self._is_connected(s_node, s_device, s_sender, s_channel,
                                      r_node, r_device, r_receiver, r_channel):
-                    # Draw a filled circle
+                    # Draw a checkmark
                     x = self.margin_left + receiver_idx * self.cell_width
                     y = self.margin_top + sender_idx * self.cell_height
                     
                     center_x = x + self.cell_width / 2
                     center_y = y + self.cell_height / 2
-                    radius = min(self.cell_width, self.cell_height) / 4
                     
-                    with self.canvas.Fill(color=rgb(0, 128, 0)) as fill:
-                        fill.arc(center_x, center_y, radius)
+                    # Calculate checkmark size based on cell size
+                    check_size = min(self.cell_width, self.cell_height) * 0.6
+                    
+                    # Draw checkmark using strokes
+                    # Checkmark consists of two lines forming a "✓" shape
+                    with self.canvas.Stroke(color=rgb(0, 180, 0), line_width=max(2, int(check_size / 10))) as stroke:
+                        # Short vertical line (bottom left part)
+                        stroke.move_to(center_x - check_size * 0.3, center_y)
+                        stroke.line_to(center_x - check_size * 0.1, center_y + check_size * 0.25)
+                        
+                        # Long diagonal line (bottom right part going up)
+                        stroke.move_to(center_x - check_size * 0.1, center_y + check_size * 0.25)
+                        stroke.line_to(center_x + check_size * 0.35, center_y - check_size * 0.3)
     
     def _is_connected(self, s_node, s_device, s_sender, s_channel,
                       r_node, r_device, r_receiver, r_channel):

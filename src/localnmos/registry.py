@@ -384,6 +384,7 @@ class NMOSRegistry:
        Calls the /map/active endpoint to retrieve the mapping from outputs to inputs.
        Each item in the 'outputs' list is potentially mapped to an input device and channel index according to IS-08's channel mapping API.
         """
+        logger.info(f"fetch_device_is08_mapping called with {len(inputs)} inputs and {len(outputs)} outputs")
         mapping_url = f"{node.channelmapping_url}/map/active"
         try:
             async with session.get(mapping_url) as response:
@@ -406,24 +407,34 @@ class NMOSRegistry:
                 # Create lookup for input devices by ID
                 input_devices_map: Dict[str, InputDevice] = {}
                 for in_dev in inputs:
+                    # Normalize by stripping trailing slash
+                    normalized_id = in_dev.id.rstrip('/')
+                    input_devices_map[normalized_id] = in_dev
+                    # Also store with original ID
                     input_devices_map[in_dev.id] = in_dev
-                    input_devices_map[in_dev.id.rstrip('/')] = in_dev
 
                 # Create lookup for output devices by ID
                 output_devices_map: Dict[str, OutputDevice] = {}
                 for out_dev in outputs:
+                    # Normalize by stripping trailing slash
+                    normalized_id = out_dev.id.rstrip('/')
+                    output_devices_map[normalized_id] = out_dev
+                    # Also store with original ID
                     output_devices_map[out_dev.id] = out_dev
-                    output_devices_map[out_dev.id.rstrip('/')] = out_dev
+                
+                logger.debug(f"Input devices map keys: {list(input_devices_map.keys())}")
+                logger.debug(f"Output devices map keys: {list(output_devices_map.keys())}")
 
                 # Apply the mapping
                 # Structure: map -> output_device_id -> channel_id -> {input: input_device_id, channel_index: int}
                 for output_dev_id, channels_map in active_map.items():
                     logger.info(f"Processing output device '{output_dev_id}' with channels: {list(channels_map.keys())}")
                     
-                    # Find the output device
-                    output_device = output_devices_map.get(output_dev_id) or output_devices_map.get(output_dev_id.rstrip('/'))
+                    # Find the output device - normalize the ID from the mapping too
+                    normalized_output_id = output_dev_id.rstrip('/')
+                    output_device = output_devices_map.get(normalized_output_id)
                     if not output_device:
-                        logger.warning(f"Output device '{output_dev_id}' not found. Available: {list(output_devices_map.keys())}")
+                        logger.warning(f"Output device '{output_dev_id}' (normalized: '{normalized_output_id}') not found. Available: {list(set(output_devices_map.keys()))}")
                         continue
                     
                     # Process each channel in this output device
@@ -453,7 +464,9 @@ class NMOSRegistry:
                         
                         # If there's a mapping, find the input device and channel
                         if input_dev_id:
-                            input_device = input_devices_map.get(input_dev_id) or input_devices_map.get(input_dev_id.rstrip('/'))
+                            # Normalize the input device ID
+                            normalized_input_id = input_dev_id.rstrip('/') if input_dev_id else None
+                            input_device = input_devices_map.get(normalized_input_id) if normalized_input_id else None
                             
                             if input_device and channel_index is not None:
                                 # Get the input channel by index
@@ -465,7 +478,7 @@ class NMOSRegistry:
                                     logger.warning(f"  Channel index {channel_index} out of range for input device {input_device.name} (has {len(input_device.channels)} channels)")
                             else:
                                 if not input_device:
-                                    logger.warning(f"  Input device '{input_dev_id}' not found. Available: {list(input_devices_map.keys())}")
+                                    logger.warning(f"  Input device '{input_dev_id}' (normalized: '{normalized_input_id}') not found. Available: {list(set(input_devices_map.keys()))}")
                                 else:
                                     logger.warning(f"  No channel_index specified for mapping")
                         else:
@@ -501,7 +514,11 @@ class NMOSRegistry:
                 
                 logger.info(f"Device {device.device_id} has {len(device.sources)} sources, assigned {len(inputs)} inputs and {len(outputs)} outputs")
                 
-                await self.fetch_device_is08_mapping(node, device, session, inputs, outputs)
+                # Always re-fetch IS-08 mappings to capture any changes
+                # Pass ALL inputs and outputs from the node, not just device-specific ones
+                # This handles cross-device mappings and mapping updates
+                await self.fetch_device_is08_mapping(node, device, session, all_inputs, all_outputs)
+                logger.info(f"Fetched IS-08 mappings for node {node.node_id}")
 
             logger.debug(f"---------------------- Found channels: {inputs}, {outputs}")
 
