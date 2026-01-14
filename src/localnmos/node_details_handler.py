@@ -5,6 +5,7 @@ Handles displaying detailed information about NMOS nodes when selected.
 
 import traceback
 import toga
+from toga.style.pack import Pack, COLUMN, ROW
 
 from localnmos import logging_utils
 from .nmos import NMOS_Node
@@ -40,17 +41,48 @@ class NodeDetailsHandler:
             # Build detailed information about the node
             details = self._build_node_details(selected_nmos_node)
             
-            # Show the details in a dialog
-            await self.main_window.dialog(toga.InfoDialog(
-                f"Node Details: {selected_nmos_node.name}",
-                "\n".join(details)
-            ))
+            # Create a custom window with scrollable content
+            self._show_details_window(selected_nmos_node.name, details)
+            
         except Exception as e:
             # Show error dialog with details
             await self.main_window.dialog(toga.ErrorDialog(
                 "Error",
                 f"Failed to show node details: {e}\n\n{traceback.format_exc()}"
             ))
+    
+    def _show_details_window(self, node_name: str, details: list):
+        """Show node details in a fixed-size window with scrollable content"""
+        # Create a new window for the details
+        details_window = toga.Window(
+            title=f"Node Details: {node_name}",
+            size=(600, 500)
+        )
+        
+        # Create main container
+        main_box = toga.Box(style=Pack(direction=COLUMN, padding=10))
+        
+        # Create a multiline text widget for the details
+        details_text = toga.MultilineTextInput(
+            value="\n".join(details),
+            readonly=True,
+            style=Pack(flex=1, padding=5)
+        )
+        
+        # Create close button
+        close_button = toga.Button(
+            "Close",
+            on_press=lambda widget: details_window.close(),
+            style=Pack(padding=5)
+        )
+        
+        # Add widgets to container
+        main_box.add(details_text)
+        main_box.add(close_button)
+        
+        # Set window content and show
+        details_window.content = main_box
+        details_window.show()
     
     def _build_node_details(self, selected_nmos_node: NMOS_Node) -> list:
         """
