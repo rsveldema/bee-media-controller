@@ -341,43 +341,29 @@ class RoutingMatrixCanvas:
         if not self.registry:
             return False
         
-        # Debug logging
-        print(f"_is_connected check: sender={s_sender.get_name()}/{s_channel.get_name() if s_channel else 'None'}, receiver={r_receiver.get_name()}/{r_channel.get_name() if r_channel else 'None'}")
-        
         # For now, check if both are on the same node and have channel mappings
         if s_node.node.node_id == r_node.node.node_id:
             # Same node - check IS-08 channel mappings
             nmos_node = self.registry.nodes.get(s_node.node.node_id)
             if nmos_node:
-                print(f"  Found node {nmos_node.node_id} with {len(nmos_node.devices)} devices")
                 for device in nmos_node.devices:
-                    print(f"  Checking device {device.device_id} (looking for sender device {s_device.device.device_id})")
                     if device.device_id == s_device.device.device_id:
-                        print(f"    Found sender device! It has {len(device.is08_output_channels)} output channel lists")
                         # Check if sender's output channel is mapped to receiver's input channel
                         if r_channel and s_channel:
-                            print(f"      Checking r_channel={r_channel}, s_channel={s_channel}")
                             for output_dev in device.is08_output_channels:
-                                print(f"      Output device {output_dev.id} at {id(output_dev)} has {len(output_dev.channels)} channels")
-                                print(f"        Type of channels: {type(output_dev.channels)}, channels list: {output_dev.channels}")
                                 for out_ch in output_dev.channels:
-                                    print(f"        Checking output channel at {id(out_ch)}: id='{out_ch.id}', label='{out_ch.label}', mapped_device={out_ch.mapped_device}")
                                     # Match output channel by ID (if not empty) or label
                                     id_match = out_ch.id and s_channel.channel.id and out_ch.id == s_channel.channel.id
                                     label_match = out_ch.label == s_channel.channel.label
                                     if id_match or label_match:
-                                        print(f"          Matched sender channel! (id_match={id_match}, label_match={label_match}) mapped_device = {out_ch.mapped_device}")
                                         # Check if this output channel has a mapped InputChannel
                                         if out_ch.mapped_device:
-                                            print(f"          Checking mapped_device: id='{out_ch.mapped_device.id}', label='{out_ch.mapped_device.label}'")
-                                            print(f"          Against receiver channel: id='{r_channel.channel.id}', label='{r_channel.channel.label}'")
                                             # Compare the mapped InputChannel with the receiver channel
                                             # Match by ID (if not empty) or label
                                             input_id_match = (out_ch.mapped_device.id and r_channel.channel.id and 
                                                             out_ch.mapped_device.id == r_channel.channel.id)
                                             input_label_match = out_ch.mapped_device.label == r_channel.channel.label
                                             if input_id_match or input_label_match:
-                                                print(f"          ✓ CONNECTED! (input_id_match={input_id_match}, input_label_match={input_label_match})")
                                                 return True
         
         # Check IS-05 connections between different nodes

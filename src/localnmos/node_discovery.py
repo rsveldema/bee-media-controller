@@ -37,18 +37,35 @@ async def find_working_nmos_port(client_host: str, trial_ports: list) -> int:
             if port is None:
                 continue
             
-            try:
-                # Try to connect to the node API self endpoint
-                test_url = f"http://{client_host}:{port}/x-nmos/node/v1.3/self"
-                logger.debug(f"Testing NMOS API at {test_url}")
-                
-                async with session.get(test_url, timeout=aiohttp.ClientTimeout(total=2)) as response:
-                    if response.status == 200:
-                        logger.info(f"Found working NMOS API on port {port}")
-                        return port
-            except Exception as e:
-                logger.debug(f"Port {port} failed: {e}")
-                continue
+            # Try multiple API versions and paths
+            test_paths = [
+                "/x-nmos/node/v1.3/self",
+                "/x-nmos/node/v1.2/self",
+                "/x-nmos/node/v1.1/self",
+                "/x-nmos/node/v1.0/self",
+                "/x-nmos/node/",  # Try just the base path
+            ]
+            
+            for path in test_paths:
+                try:
+                    test_url = f"http://{client_host}:{port}{path}"
+                    logger.info(f"Testing NMOS API at {test_url}")
+                    
+                    async with session.get(test_url, timeout=aiohttp.ClientTimeout(total=2)) as response:
+                        if response.status == 200:
+                            logger.info(f"Found working NMOS API on port {port} at path {path}")
+                            return port
+                        elif response.status == 404:
+                            logger.debug(f"Port {port} path {path} returned 404, trying next path")
+                            continue  # Try next path
+                        else:
+                            logger.info(f"Port {port} path {path} responded with status {response.status}")
+                except Exception as e:
+                    logger.debug(f"Port {port} path {path} failed: {e}")
+                    continue
+            
+            # If we got here, none of the paths worked for this port
+            logger.info(f"Port {port} failed - no valid NMOS API path found")
     
     logger.warning(f"Could not find working NMOS port for {client_host} (tried {trial_ports})")
     return None
