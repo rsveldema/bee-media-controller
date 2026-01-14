@@ -392,8 +392,18 @@ class LocalNMOS(toga.App):
         """UI update for node added (runs on main thread)"""
         print(f"GUI - Node discovered: {node.name} at {node.address}:{node.port}")
         
+        # Ensure model has the latest reference
+        if self.registry:
+            self.model.nodes = self.registry.nodes
+        
+        # Get the updated nodes list
+        nodes_list = self.model.get_nodes()
+        print(f"GUI - Total nodes in model: {len(nodes_list)}")
+        
         # Refresh the listbox to show the new node
-        self.listbox.data = self.model.get_nodes()
+        self.listbox.data.clear()
+        for node_item in nodes_list:
+            self.listbox.data.append(node_item)
         
         # Redraw the matrix with the new node
         self.draw_routing_matrix()

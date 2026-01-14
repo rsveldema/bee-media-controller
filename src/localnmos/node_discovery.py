@@ -20,6 +20,40 @@ logger = create_logger(__name__)
 NMOS_STANDARD_PORT = 1936
 
 
+async def find_working_nmos_port(client_host: str, trial_ports: list) -> int:
+    """
+    Try to find a working NMOS port by testing connectivity to the node API.
+    
+    Args:
+        client_host: The host address to test
+        trial_ports: List of ports to try in order
+        
+    Returns:
+        The first working port, or None if none work
+    """
+    connector = aiohttp.TCPConnector(ssl=False)
+    async with aiohttp.ClientSession(connector=connector) as session:
+        for port in trial_ports:
+            if port is None:
+                continue
+            
+            try:
+                # Try to connect to the node API self endpoint
+                test_url = f"http://{client_host}:{port}/x-nmos/node/v1.3/self"
+                logger.debug(f"Testing NMOS API at {test_url}")
+                
+                async with session.get(test_url, timeout=aiohttp.ClientTimeout(total=2)) as response:
+                    if response.status == 200:
+                        logger.info(f"Found working NMOS API on port {port}")
+                        return port
+            except Exception as e:
+                logger.debug(f"Port {port} failed: {e}")
+                continue
+    
+    logger.warning(f"Could not find working NMOS port for {client_host} (tried {trial_ports})")
+    return None
+
+
 def assign_temporary_channels_to_devices(node: NMOS_Node) -> None:
     """
     Assign temporarily stored channels to devices based on source matching.
@@ -462,13 +496,20 @@ async def register_node_from_health_update(
             return
     
     client_host = request.remote
+    # try request.url.port first, then fall back to standard NMOS port, and if that fails, 
+    trial_ports = [NMOS_STANDARD_PORT, 8080, request.url.port, 443, 8443]
+    port = await find_working_nmos_port(client_host, trial_ports)
+    if port is None:
+        logger.error(f"Could not determine working NMOS port for node {node_id} at {client_host}, skipping registration")
+        return
     
+    logger.info(f"Using port {port} for NMOS API of node {node_id} at {client_host}")
     # Create a basic node registration
     node = NMOS_Node(
         name=f"Node {node_id}",
         node_id=node_id,
         address=client_host,
-        port=NMOS_STANDARD_PORT,  # Default port
+        port=port,  # Use the port from the request or default
         service_type='_nmos-register._tcp.local.',
         api_ver='v1.3',
         properties={'id': node_id},

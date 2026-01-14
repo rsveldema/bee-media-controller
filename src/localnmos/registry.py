@@ -696,7 +696,7 @@ class NMOSRegistry:
                 error_msg = f"Failed to stop System Configuration API server: {e}"
                 ErrorLog().add_error(error_msg, exception=e, traceback_str=traceback.format_exc())
 
-    async def _handle_health(self, request):
+    async def _handle_health(self, request: web.Request):
         """ handle health update """
         try:
             nodeId = request.match_info.get('nodeId')
