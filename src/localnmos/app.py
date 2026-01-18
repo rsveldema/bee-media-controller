@@ -588,6 +588,10 @@ class LocalNMOS(toga.App):
                 )
                 print("Channel mapping connected successfully")
             
+            # Ensure registry is set on matrix canvas before refreshing
+            if self.registry and hasattr(self, 'matrix_canvas'):
+                self.matrix_canvas.registry = self.registry
+            
             # Refresh the matrix to show updated connections
             self.draw_routing_matrix()
             
