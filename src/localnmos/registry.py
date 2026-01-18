@@ -425,6 +425,11 @@ class NMOSRegistry:
                 logger.debug(f"Input devices map keys: {list(input_devices_map.keys())}")
                 logger.debug(f"Output devices map keys: {list(output_devices_map.keys())}")
 
+                # First, clear all existing mappings before applying new ones
+                for out_dev in outputs:
+                    for out_chan in out_dev.channels:
+                        out_chan.mapped_device = None
+
                 # Apply the mapping
                 # Structure: map -> output_device_id -> channel_id -> {input: input_device_id, channel_index: int}
                 for output_dev_id, channels_map in active_map.items():
@@ -483,6 +488,8 @@ class NMOSRegistry:
                                 else:
                                     logger.warning(f"  No channel_index specified for mapping")
                         else:
+                            # No input mapping - clear any existing mapping
+                            output_channel.mapped_device = None
                             logger.debug(f"  No input mapping for {output_device.name}/{output_channel.label}")
         except Exception as e:
             error_msg = f"Error fetching or processing IS-08 mapping for device {device.device_id}: {e}"

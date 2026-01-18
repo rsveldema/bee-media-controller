@@ -524,11 +524,10 @@ async def is_08_connect_channel_mapping(
         # Find the input channel index within its device
         input_channel_index = None
         for idx, chan in enumerate(input_dev.channels):
-            if (
-                chan is input_chan
-                or chan.id == input_chan.id
-                or (not chan.id and chan.label == input_chan.label)
-            ):
+            # Match by ID (if not empty) or label, or object identity
+            id_match = chan.id and input_chan.id and chan.id == input_chan.id
+            label_match = chan.label == input_chan.label
+            if chan is input_chan or id_match or label_match:
                 input_channel_index = idx
                 break
 
@@ -979,6 +978,8 @@ async def is_08_disconnect_channel_mapping(
             # POST request to /map/activations for immediate activation
             async with session.post(activations_url, json=activation_data) as response:
                 if response.status in [200, 202]:
+                    # Clear the mapped_device reference locally
+                    output_chan.mapped_device = None
                     logger.info(
                         f"Successfully cleared mapping for output channel {output_chan.label}"
                     )

@@ -434,20 +434,30 @@ class LocalNMOS(toga.App):
             # Same node - check IS-08 channel mappings
             nmos_node = self.registry.nodes.get(s_node.node_id)
             if nmos_node:
-                r_device = receiver_device.device if hasattr(receiver_device, 'device') else None
-                if r_device:
+                s_device = sender_device.device if hasattr(sender_device, 'device') else None
+                if s_device:
                     for device in nmos_node.devices:
-                        if device.device_id == r_device.device_id:
-                            # Check if receiver's input channels are mapped to sender's output
+                        if device.device_id == s_device.device_id:
+                            # Check if sender's output channels are mapped to receiver's input
                             if receiver_channel and sender_channel:
                                 r_chan = receiver_channel.channel if hasattr(receiver_channel, 'channel') else None
                                 s_chan = sender_channel.channel if hasattr(sender_channel, 'channel') else None
                                 if r_chan and s_chan:
                                     for output_dev in device.is08_output_channels:
                                         for out_ch in output_dev.channels:
-                                            if out_ch.id == s_chan.id:
-                                                if out_ch.mapped_device and out_ch.mapped_device.id == r_chan.id:
-                                                    return True
+                                            # Match output channel by ID (if not empty) or label
+                                            id_match = out_ch.id and s_chan.id and out_ch.id == s_chan.id
+                                            label_match = out_ch.label == s_chan.label
+                                            if id_match or label_match:
+                                                # Check if this output channel has a mapped InputChannel
+                                                if out_ch.mapped_device:
+                                                    # Compare the mapped InputChannel with the receiver channel
+                                                    # Match by ID (if not empty) or label
+                                                    input_id_match = (out_ch.mapped_device.id and r_chan.id and 
+                                                                    out_ch.mapped_device.id == r_chan.id)
+                                                    input_label_match = out_ch.mapped_device.label == r_chan.label
+                                                    if input_id_match or input_label_match:
+                                                        return True
         
         return False
 
@@ -512,7 +522,10 @@ class LocalNMOS(toga.App):
         if sender_output_chan and sender_nmos_device.is08_output_channels:
             for out_dev in sender_nmos_device.is08_output_channels:
                 for chan in out_dev.channels:
-                    if chan.id == sender_output_chan.id or chan.label == sender_output_chan.label:
+                    # Match by ID (if not empty) or label
+                    id_match = chan.id and sender_output_chan.id and chan.id == sender_output_chan.id
+                    label_match = chan.label == sender_output_chan.label
+                    if id_match or label_match:
                         sender_output_dev = out_dev
                         break
                 if sender_output_dev:
@@ -523,7 +536,10 @@ class LocalNMOS(toga.App):
         if receiver_input_chan and receiver_nmos_device.is08_input_channels:
             for in_dev in receiver_nmos_device.is08_input_channels:
                 for chan in in_dev.channels:
-                    if chan.id == receiver_input_chan.id or chan.label == receiver_input_chan.label:
+                    # Match by ID (if not empty) or label
+                    id_match = chan.id and receiver_input_chan.id and chan.id == receiver_input_chan.id
+                    label_match = chan.label == receiver_input_chan.label
+                    if id_match or label_match:
                         receiver_input_dev = in_dev
                         break
                 if receiver_input_dev:
