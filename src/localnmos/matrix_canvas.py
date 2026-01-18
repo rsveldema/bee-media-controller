@@ -353,8 +353,9 @@ class RoutingMatrixCanvas:
                             for output_dev in device.is08_output_channels:
                                 for out_ch in output_dev.channels:
                                     # Match output channel by ID (if not empty) or label
+                                    # Be very strict about matching to avoid false positives
                                     id_match = out_ch.id and s_channel.channel.id and out_ch.id == s_channel.channel.id
-                                    label_match = out_ch.label == s_channel.channel.label
+                                    label_match = (not id_match) and out_ch.label == s_channel.channel.label
                                     if id_match or label_match:
                                         # Check if this output channel has a mapped InputChannel
                                         if out_ch.mapped_device:
@@ -362,7 +363,7 @@ class RoutingMatrixCanvas:
                                             # Match by ID (if not empty) or label
                                             input_id_match = (out_ch.mapped_device.id and r_channel.channel.id and 
                                                             out_ch.mapped_device.id == r_channel.channel.id)
-                                            input_label_match = out_ch.mapped_device.label == r_channel.channel.label
+                                            input_label_match = (not input_id_match) and out_ch.mapped_device.label == r_channel.channel.label
                                             if input_id_match or input_label_match:
                                                 return True
         
