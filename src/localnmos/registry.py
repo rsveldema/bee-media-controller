@@ -425,10 +425,8 @@ class NMOSRegistry:
                 logger.debug(f"Input devices map keys: {list(input_devices_map.keys())}")
                 logger.debug(f"Output devices map keys: {list(output_devices_map.keys())}")
 
-                # First, clear all existing mappings before applying new ones
-                for out_dev in outputs:
-                    for out_chan in out_dev.channels:
-                        out_chan.mapped_device = None
+                # Track which output channels we've processed
+                processed_channels = set()
 
                 # Apply the mapping
                 # Structure: map -> output_device_id -> channel_id -> {input: input_device_id, channel_index: int}
@@ -467,6 +465,9 @@ class NMOSRegistry:
                             logger.warning(f"  Output channel '{channel_id}' not found in device {output_device.name}")
                             continue
                         
+                        # Mark this channel as processed
+                        processed_channels.add((id(output_device), id(output_channel)))
+                        
                         # If there's a mapping, find the input device and channel
                         if input_dev_id:
                             # Normalize the input device ID
@@ -491,6 +492,15 @@ class NMOSRegistry:
                             # No input mapping - clear any existing mapping
                             output_channel.mapped_device = None
                             logger.debug(f"  No input mapping for {output_device.name}/{output_channel.label}")
+                
+                # Clear mappings for any channels that weren't in the active_map
+                for out_dev in outputs:
+                    for out_chan in out_dev.channels:
+                        if (id(out_dev), id(out_chan)) not in processed_channels:
+                            if out_chan.mapped_device is not None:
+                                logger.debug(f"  Clearing unmentioned mapping for {out_dev.name}/{out_chan.label}")
+                                out_chan.mapped_device = None
+                                
         except Exception as e:
             error_msg = f"Error fetching or processing IS-08 mapping for device {device.device_id}: {e}"
             ErrorLog().add_error(error_msg, exception=e, traceback_str=traceback.format_exc())
